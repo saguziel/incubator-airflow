@@ -1614,7 +1614,7 @@ class Airflow(BaseView):
             form=form,
         )
 
-    @expose('/paused')
+    @expose('/paused', methods=['POST'])
     @login_required
     @wwwutils.action_logging
     def paused(self):
@@ -1883,7 +1883,7 @@ class HomeView(AdminIndexView):
 
 
 class QueryView(wwwutils.DataProfilingMixin, BaseView):
-    @expose('/')
+    @expose('/', methods=['POST', 'GET'])
     @wwwutils.gzipped
     def query(self):
         session = settings.Session()
@@ -1892,9 +1892,9 @@ class QueryView(wwwutils.DataProfilingMixin, BaseView):
         session.expunge_all()
         db_choices = list(
             ((db.conn_id, db.conn_id) for db in dbs if db.get_hook()))
-        conn_id_str = request.args.get('conn_id')
-        csv = request.args.get('csv') == "true"
-        sql = request.args.get('sql')
+        conn_id_str = request.form.get('conn_id')
+        csv = request.form.get('csv') == "true"
+        sql = request.form.get('sql')
 
         class QueryForm(Form):
             conn_id = SelectField("Layout", choices=db_choices)
