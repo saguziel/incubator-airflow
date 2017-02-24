@@ -904,6 +904,15 @@ class CoreTest(unittest.TestCase):
             ti.refresh_from_db(session=session)
             self.assertEqual(State.RUNNING, ti.state)
             self.assertEqual(p1pid, ti.pid)
+
+            # check changing hostname kills task
+            ti.refresh_from_db(session=session, lock_for_update=True)
+            ti.hostname = 'nonexistenthostname'
+            session.merge(ti)
+            session.commit()
+
+            p1.join(5)
+            self.assertFalse(p1.is_alive())
         finally:
             try:
                 p1.terminate()
