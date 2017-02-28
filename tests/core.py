@@ -27,6 +27,7 @@ from datetime import datetime, time, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
 import signal
+from time import time as timetime
 from time import sleep
 import warnings
 
@@ -63,7 +64,7 @@ from airflow.configuration import AirflowConfigException
 
 import six
 
-NUM_EXAMPLE_DAGS = 18
+NUM_EXAMPLE_DAGS = 19
 DEV_NULL = '/dev/null'
 TEST_DAG_FOLDER = os.path.join(
     os.path.dirname(os.path.realpath(__file__)), 'dags')
@@ -871,6 +872,48 @@ class CoreTest(unittest.TestCase):
                 task_id='test_bad_trigger',
                 trigger_rule="non_existant",
                 dag=self.dag)
+
+    def test_run_task_twice(self):
+        """If two copies of a TI run, the new one should die, and old should live"""
+        TI = models.TaskInstance
+        dag = self.dagbag.dags.get('sleep_forever_dag')
+        task = dag.task_dict.get('sleeps_forever')
+    
+        ti = TI(task=task, execution_date=DEFAULT_DATE)
+        job1 = jobs.LocalTaskJob(
+            task_instance=ti, ignore_ti_state=True, executor=SequentialExecutor())
+        job2 = jobs.LocalTaskJob(
+            task_instance=ti, ignore_ti_state=True, executor=SequentialExecutor())
+
+        p1 = multiprocessing.Process(target=job1.run)
+        p2 = multiprocessing.Process(target=job2.run)
+        try:
+            session = settings.Session()
+            p1.start()
+            start_time = timetime()
+            while ti.state != State.RUNNING and timetime() - start_time <= 5.0:
+                sleep(0.5)
+                ti.refresh_from_db(session=session)
+            self.assertEqual(State.RUNNING, ti.state)
+            p1pid = ti.pid
+            p2.start()
+            p2.join(5) # wait 5 seconds until termination
+            self.assertFalse(p2.is_alive())
+            self.assertTrue(p1.is_alive())
+
+            ti.refresh_from_db(session=session)
+            self.assertEqual(State.RUNNING, ti.state)
+            self.assertEqual(p1pid, ti.pid)
+        finally:
+            try:
+                p1.terminate()
+            except AttributeError:
+                pass # process already terminated
+            try:
+                p2.terminate()
+            except AttributeError:
+                pass # process already terminated
+            session.close()
 
     def test_terminate_task(self):
         """If a task instance's db state get deleted, it should fail"""
