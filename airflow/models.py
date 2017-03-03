@@ -3590,17 +3590,34 @@ class XCom(Base):
     @classmethod
     @provide_session
     def set(
-            cls,
-            key,
-            value,
-            execution_date,
-            task_id,
-            dag_id,
-            session=None):
+        cls,
+        key,
+        value,
+        execution_date,
+        task_id,
+        dag_id,
+        session=None,
+        enable_pickling=None):
         """
         Store an XCom value.
+        :param enable_pickling: if not enable_pickling, XCom value will be parsed as JSON type.
+        :return: None
         """
         session.expunge_all()
+
+        if enable_pickling is None:
+            enable_pickling = configuration.getboolean('core', 'enable_pickling')
+
+        if not enable_pickling:
+            try:
+                # Make sure the value can be parsed as JSON.
+                json.dumps(value)
+            except ValueError:
+                logging.error("Could not parse the XCOM value as a "
+                              "JSON type. Was the value is a pickle "
+                              "type and you need enable pickle support "
+                              "for XCOM in your airflow config?")
+                raise
 
         # remove any duplicate XComs
         session.query(cls).filter(
