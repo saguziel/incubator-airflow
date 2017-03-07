@@ -738,7 +738,6 @@ class TaskInstanceTest(unittest.TestCase):
         with self.assertRaises(TestError):
             ti.run()
 
-
     def test_xcom_disable_pickle_type(self):
         json_obj = {"key": "value"}
         execution_date = datetime.datetime.now()
@@ -782,7 +781,6 @@ class TaskInstanceTest(unittest.TestCase):
                  enable_pickling=True)
 
         self.assertEqual(ret_value, json_obj)
-
 
     def test_xcom_disable_pickle_type_fail_on_non_json(self):
         class PickleRce(object):
