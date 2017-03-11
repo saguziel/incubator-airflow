@@ -2115,13 +2115,13 @@ class LocalTaskJob(BaseJob):
                 logging.warning("The recorded hostname {ti.hostname} "
                                 "does not match this instance's hostname "
                                 "{fqdn}".format(**locals()))
-                #raise AirflowException("Hostname of job runner does not match")
+                raise AirflowException("Hostname of job runner does not match")
             elif not self._is_descendant_process(ti.pid):
                 current_pid = os.getpid()
                 logging.warning("Recorded pid {ti.pid} is not a "
                                 "descendant of the current pid "
                                 "{current_pid}".format(**locals()))
-                #raise AirflowException("PID of job runner does not match")
+                raise AirflowException("PID of job runner does not match")
         elif (self.was_running
               and self.task_runner.return_code() is None
               and hasattr(self.task_runner, 'process')):
