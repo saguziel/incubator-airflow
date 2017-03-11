@@ -46,7 +46,7 @@ from airflow.utils.dag_processing import SimpleDagBag, list_py_file_paths
 
 from mock import Mock, patch
 from sqlalchemy.orm.session import make_transient
-from tests.executors.test_executor import TestExecutor
+from tests.executor.test_executor import TestExecutor
 
 from tests.core import TEST_DAG_FOLDER
 
@@ -175,6 +175,54 @@ class BackfillJobTest(unittest.TestCase):
                 ignore_first_depends_on_past=True)
             job.run()
 
+    def test_backfill_ordered_concurrent_execute(self):
+        dag = DAG(
+            dag_id='test_backfill_ordered_concurrent_execute',
+            start_date=DEFAULT_DATE,
+            schedule_interval="@daily")
+
+        with dag:
+            op1 = DummyOperator(task_id='leave1')
+            op2 = DummyOperator(task_id='leave2')
+            op3 = DummyOperator(task_id='upstream_level_1')
+            op4 = DummyOperator(task_id='upstream_level_2')
+            op5 = DummyOperator(task_id='upstream_level_3')
+            # order randomly
+            op2.set_downstream(op3)
+            op1.set_downstream(op3)
+            op4.set_downstream(op5)
+            op3.set_downstream(op4)
+
+        dag.clear()
+
+        executor = TestExecutor(do_update=True)
+        job = BackfillJob(dag=dag,
+                          executor=executor,
+                          start_date=DEFAULT_DATE,
+                          end_date=DEFAULT_DATE + datetime.timedelta(days=2),
+                          )
+        job.run()
+
+        # test executor history keeps a list
+        history = executor.history
+
+        # check if right order. Every loop has a 'pause' (0) to change state
+        # from RUNNING to SUCCESS.
+        # 6,0,3,0,3,0,3,0 = 8 loops
+        self.assertEqual(8, len(history))
+
+        loop_count = 0
+
+        while len(history) > 0:
+            queued_tasks = history.pop(0)
+            if loop_count == 0:
+                # first loop should contain 6 tasks (3 days x 2 tasks)
+                self.assertEqual(6, len(queued_tasks))
+            if loop_count == 2 or loop_count == 4 or loop_count == 6:
+                # 3 days x 1 task
+                self.assertEqual(3, len(queued_tasks))
+            loop_count += 1
+
     def test_backfill_pooled_tasks(self):
         """
         Test that queued tasks are executed by BackfillJob
@@ -185,7 +233,6 @@ class BackfillJobTest(unittest.TestCase):
         pool = Pool(pool='test_backfill_pooled_task_pool', slots=1)
         session.add(pool)
         session.commit()
-
         dag = self.dagbag.get_dag('test_backfill_pooled_task_dag')
         dag.clear()
 
