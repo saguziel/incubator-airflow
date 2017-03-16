@@ -2120,8 +2120,11 @@ class LocalTaskJob(BaseJob):
         elif (self.was_running
               and self.task_runner.return_code() is None
               and hasattr(self.task_runner, 'process')):
-            logging.warning(
-                "State of this instance has been externally set to "
-                "{}. Taking the poison pill. So long.".format(ti.state))
-            self.task_runner.terminate()
-            self.terminating = True
+            if ti.state == State.SUCCESS:
+                logging.warning("State has been set to SUCCESS. Not terminating.")
+            else:
+                logging.warning(
+                    "State of this instance has been externally set to "
+                    "{}. Taking the poison pill. So long.".format(ti.state))
+                self.task_runner.terminate()
+                self.terminating = True
