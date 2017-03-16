@@ -2117,7 +2117,7 @@ class LocalTaskJob(BaseJob):
                                 "descendant of the current pid "
                                 "{current_pid}".format(**locals()))
                 #raise AirflowException("PID of job runner does not match")
-        elif (self.was_running
+        elif (self.was_running and ti.state != State.SUCCESS
               and self.task_runner.return_code() is None
               and hasattr(self.task_runner, 'process')):
             logging.warning(
