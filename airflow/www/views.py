@@ -100,17 +100,19 @@ if conf.getboolean('webserver', 'FILTER_BY_OWNER'):
     # filter_by_owner if authentication is enabled and filter_by_owner is true
     FILTER_BY_OWNER = not current_app.config['LOGIN_DISABLED']
 
+def bleached_markup(s):
+    return Markup(bleach.clean(s))
 
 def dag_link(v, c, m, p):
     url = url_for(
         'airflow.graph',
         dag_id=m.dag_id)
-    return Markup(
+    return bleached_markup(
         '<a href="{url}">{m.dag_id}</a>'.format(**locals()))
 
 
 def log_url_formatter(v, c, m, p):
-    return Markup(
+    return bleached_markup(
         '<a href="{m.log_url}">'
         '    <span class="glyphicon glyphicon-book" aria-hidden="true">'
         '</span></a>').format(**locals())
@@ -127,7 +129,7 @@ def task_instance_link(v, c, m, p):
         dag_id=m.dag_id,
         root=m.task_id,
         execution_date=m.execution_date.isoformat())
-    return Markup(
+    return bleached_markup(
         """
         <span style="white-space: nowrap;">
         <a href="{url}">{m.task_id}</a>
@@ -141,7 +143,7 @@ def task_instance_link(v, c, m, p):
 
 def state_token(state):
     color = State.color(state)
-    return Markup(
+    return bleached_markup(
         '<span class="label" style="background-color:{color};">'
         '{state}</span>'.format(**locals()))
 
@@ -160,11 +162,11 @@ def datetime_f(v, c, m, p):
     dttm = attr.isoformat() if attr else ''
     if datetime.now().isoformat()[:4] == dttm[:4]:
         dttm = dttm[5:]
-    return Markup("<nobr>{}</nobr>".format(dttm))
+    return bleached_markup("<nobr>{}</nobr>".format(dttm))
 
 
 def nobr_f(v, c, m, p):
-    return Markup("<nobr>{}</nobr>".format(getattr(m, p)))
+    return bleached_markup("<nobr>{}</nobr>".format(getattr(m, p)))
 
 
 def label_link(v, c, m, p):
@@ -175,12 +177,12 @@ def label_link(v, c, m, p):
     url = url_for(
         'airflow.chart', chart_id=m.id, iteration_no=m.iteration_no,
         **default_params)
-    return Markup("<a href='{url}'>{m.label}</a>".format(**locals()))
+    return bleached_markup("<a href='{url}'>{m.label}</a>".format(**locals()))
 
 
 def pool_link(v, c, m, p):
-    url = '/admin/taskinstance/?flt1_pool_equals=' + m.pool
-    return Markup("<a href='{url}'>{m.pool}</a>".format(**locals()))
+    url = bleach.clean('/admin/taskinstance/?flt1_pool_equals=' + m.pool)
+    return bleached_markup("<a href='{url}'>{m.pool}</a>".format(**locals()))
 
 
 def pygment_html_render(s, lexer=lexers.TextLexer):
@@ -246,7 +248,7 @@ def fused_slots(v, c, m, p):
         '/admin/taskinstance/' +
         '?flt1_pool_equals=' + m.pool +
         '&flt2_state_equals=running')
-    return Markup("<a href='{0}'>{1}</a>".format(url, m.used_slots()))
+    return bleached_markup("<a href='{0}'>{1}</a>".format(url, m.used_slots()))
 
 
 def fqueued_slots(v, c, m, p):
@@ -254,7 +256,7 @@ def fqueued_slots(v, c, m, p):
         '/admin/taskinstance/' +
         '?flt1_pool_equals=' + m.pool +
         '&flt2_state_equals=queued&sort=10&desc=1')
-    return Markup("<a href='{0}'>{1}</a>".format(url, m.queued_slots()))
+    return bleached_markup("<a href='{0}'>{1}</a>".format(url, m.queued_slots()))
 
 
 def recurse_tasks(tasks, task_ids, dag_ids, task_id_to_dag):
@@ -2136,7 +2138,7 @@ class VariableView(wwwutils.DataProfilingMixin, AirflowModelView):
 
     def hidden_field_formatter(view, context, model, name):
         if should_hide_value_for_key(model.key):
-            return Markup('*' * 8)
+            return bleached_markup('*' * 8)
         return getattr(model, name)
 
     form_columns = (
