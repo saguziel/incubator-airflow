@@ -14,6 +14,7 @@
 
 from __future__ import print_function
 
+import bleach
 import doctest
 import json
 import os
@@ -1426,7 +1427,7 @@ class CliTests(unittest.TestCase):
         os.remove('variables1.json')
         os.remove('variables2.json')
 
-class CSRFTests(unittest.TestCase):
+class SecurityTests(unittest.TestCase):
     def setUp(self):
         configuration.load_test_config()
         configuration.conf.set("webserver", "authenticate", "False")
@@ -1460,6 +1461,15 @@ class CSRFTests(unittest.TestCase):
         csrf = self.get_csrf(response)
         response = self.app.post("/admin/queryview/", data=dict(csrf_token=csrf))
         self.assertEqual(200, response.status_code)
+
+    def test_xss(self):
+        try:
+            self.app.get("/admin/airflow/tree?dag_id=<script>alert(123456)</script>")
+        except:
+            # exception is expected here since dag doesnt exist
+            pass
+        response = self.app.get("/admin/log", follow_redirects=True)
+        self.assertIn(bleach.clean("<script>alert(123456)</script>"), response.data.decode('UTF-8'))
 
     def tearDown(self):
         configuration.conf.set("webserver", "expose_config", "False")
