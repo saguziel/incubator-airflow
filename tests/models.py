@@ -122,15 +122,13 @@ class DagTest(unittest.TestCase):
 
 class DagRunTest(unittest.TestCase):
 
-    def setUp(self):
-        self.dagbag = models.DagBag(dag_folder=TEST_DAG_FOLDER)
-
-    def create_dag_run(self, dag_id, state=State.RUNNING, task_states=None):
+    def create_dag_run(self, dag, state=State.RUNNING, task_states=None, execution_date=None):
         now = datetime.datetime.now()
-        dag = self.dagbag.get_dag(dag_id)
+        if execution_date is None:
+            execution_date = now
         dag_run = dag.create_dagrun(
             run_id='manual__' + now.isoformat(),
-            execution_date=now,
+            execution_date=execution_date,
             start_date=now,
             state=State.RUNNING,
             external_trigger=False,
@@ -183,6 +181,105 @@ class DagRunTest(unittest.TestCase):
                                       task_states=initial_task_states)
         updated_dag_state = dag_run.update_state()
         self.assertEqual(State.SUCCESS, updated_dag_state)
+
+    def test_dagrun_success_conditions(self):
+        session = settings.Session()
+
+        dag = DAG(
+            'test_dagrun_success_conditions',
+            start_date=DEFAULT_DATE,
+            default_args={'owner': 'owner1'})
+
+        # A -> B
+        # A -> C -> D
+        # ordered: B, D, C, A or D, B, C, A or D, C, B, A
+        with dag:
+            op1 = DummyOperator(task_id='A')
+            op2 = DummyOperator(task_id='B')
+            op3 = DummyOperator(task_id='C')
+            op4 = DummyOperator(task_id='D')
+            op1.set_upstream([op2, op3])
+            op3.set_upstream(op4)
+
+        dag.clear()
+
+        now = datetime.datetime.now()
+        dr = dag.create_dagrun(run_id='test_dagrun_success_conditions',
+                               state=State.RUNNING,
+                               execution_date=now,
+                               start_date=now)
+
+        # op1 = root
+        ti_op1 = dr.get_task_instance(task_id=op1.task_id)
+        ti_op1.set_state(state=State.SUCCESS, session=session)
+
+        ti_op2 = dr.get_task_instance(task_id=op2.task_id)
+        ti_op3 = dr.get_task_instance(task_id=op3.task_id)
+        ti_op4 = dr.get_task_instance(task_id=op4.task_id)
+
+        # root is successful, but unfinished tasks
+        state = dr.update_state()
+        self.assertEqual(State.RUNNING, state)
+
+        # one has failed, but root is successful
+        ti_op2.set_state(state=State.FAILED, session=session)
+        ti_op3.set_state(state=State.SUCCESS, session=session)
+        ti_op4.set_state(state=State.SUCCESS, session=session)
+        state = dr.update_state()
+        self.assertEqual(State.SUCCESS, state)
+
+        # upstream dependency failed, root has not run
+        ti_op1.set_state(State.NONE, session)
+        state = dr.update_state()
+        self.assertEqual(State.FAILED, state)
+
+    def test_get_task_instance_on_empty_dagrun(self):
+        """
+        Make sure that a proper value is returned when a dagrun has no task instances
+        """
+        dag = DAG(
+            dag_id='test_get_task_instance_on_empty_dagrun',
+            start_date=datetime.datetime(2017, 1, 1)
+        )
+        dag_task1 = ShortCircuitOperator(
+            task_id='test_short_circuit_false',
+            dag=dag,
+            python_callable=lambda: False)
+
+        session = settings.Session()
+
+        now = datetime.datetime.now()
+
+        # Don't use create_dagrun since it will create the task instances too which we
+        # don't want
+        dag_run = models.DagRun(
+            dag_id=dag.dag_id,
+            run_id='manual__' + now.isoformat(),
+            execution_date=now,
+            start_date=now,
+            state=State.RUNNING,
+            external_trigger=False,
+        )
+        session.add(dag_run)
+        session.commit()
+
+        ti = dag_run.get_task_instance('test_short_circuit_false')
+        self.assertEqual(None, ti)
+
+    def test_get_latest_runs(self):
+        session = settings.Session()
+        dag = DAG(
+            dag_id='test_latest_runs_1',
+            start_date=DEFAULT_DATE)
+        dag_1_run_1 = self.create_dag_run(dag, 
+                execution_date=datetime.datetime(2015, 1, 1))
+        dag_1_run_2 = self.create_dag_run(dag,
+                execution_date=datetime.datetime(2015, 1, 2))
+        dagruns = models.DagRun.get_latest_runs(session)
+        session.close()
+        for dagrun in dagruns:
+            if dagrun.dag_id == 'test_latest_runs_1':
+                self.assertEqual(dagrun.execution_date, datetime.datetime(2015, 1, 2))
 
 
 class DagBagTest(unittest.TestCase):
