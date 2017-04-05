@@ -119,6 +119,119 @@ class DagTest(unittest.TestCase):
         self.assertEqual(dag.dag_id, 'creating_dag_in_cm')
         self.assertEqual(dag.tasks[0].task_id, 'op6')
 
+    def test_dag_topological_sort(self):
+        dag = DAG(
+            'dag',
+            start_date=DEFAULT_DATE,
+            default_args={'owner': 'owner1'})
+
+        # A -> B
+        # A -> C -> D
+        # ordered: B, D, C, A or D, B, C, A or D, C, B, A
+        with dag:
+            op1 = DummyOperator(task_id='A')
+            op2 = DummyOperator(task_id='B')
+            op3 = DummyOperator(task_id='C')
+            op4 = DummyOperator(task_id='D')
+            op1.set_upstream([op2, op3])
+            op3.set_upstream(op4)
+
+        topological_list = dag.topological_sort()
+        logging.info(topological_list)
+
+        tasks = [op2, op3, op4]
+        self.assertTrue(topological_list[0] in tasks)
+        tasks.remove(topological_list[0])
+        self.assertTrue(topological_list[1] in tasks)
+        tasks.remove(topological_list[1])
+        self.assertTrue(topological_list[2] in tasks)
+        tasks.remove(topological_list[2])
+        self.assertTrue(topological_list[3] == op1)
+
+        dag = DAG(
+            'dag',
+            start_date=DEFAULT_DATE,
+            default_args={'owner': 'owner1'})
+
+        # C -> (A u B) -> D
+        # C -> E
+        # ordered: E | D, A | B, C
+        with dag:
+            op1 = DummyOperator(task_id='A')
+            op2 = DummyOperator(task_id='B')
+            op3 = DummyOperator(task_id='C')
+            op4 = DummyOperator(task_id='D')
+            op5 = DummyOperator(task_id='E')
+            op1.set_downstream(op3)
+            op2.set_downstream(op3)
+            op1.set_upstream(op4)
+            op2.set_upstream(op4)
+            op5.set_downstream(op3)
+
+        topological_list = dag.topological_sort()
+        logging.info(topological_list)
+
+        set1 = [op4, op5]
+        self.assertTrue(topological_list[0] in set1)
+        set1.remove(topological_list[0])
+
+        set2 = [op1, op2]
+        set2.extend(set1)
+        self.assertTrue(topological_list[1] in set2)
+        set2.remove(topological_list[1])
+
+        self.assertTrue(topological_list[2] in set2)
+        set2.remove(topological_list[2])
+
+        self.assertTrue(topological_list[3] in set2)
+
+        self.assertTrue(topological_list[4] == op3)
+
+        dag = DAG(
+            'dag',
+            start_date=DEFAULT_DATE,
+            default_args={'owner': 'owner1'})
+
+        self.assertEquals(tuple(), dag.topological_sort())
+
+    def test_get_num_task_instances(self):
+        test_dag_id = 'test_get_num_task_instances_dag'
+        test_task_id = 'task_1'
+
+        test_dag = DAG(dag_id=test_dag_id, start_date=DEFAULT_DATE)
+        test_task = DummyOperator(task_id=test_task_id, dag=test_dag)
+
+        ti1 = TI(task=test_task, execution_date=DEFAULT_DATE)
+        ti1.state = None
+        ti2 = TI(task=test_task, execution_date=DEFAULT_DATE + datetime.timedelta(days=1))
+        ti2.state = State.RUNNING
+        ti3 = TI(task=test_task, execution_date=DEFAULT_DATE + datetime.timedelta(days=2))
+        ti3.state = State.QUEUED
+        ti4 = TI(task=test_task, execution_date=DEFAULT_DATE + datetime.timedelta(days=3))
+        ti4.state = State.RUNNING
+        session = settings.Session()
+        session.merge(ti1)
+        session.merge(ti2)
+        session.merge(ti3)
+        session.merge(ti4)
+        session.commit()
+
+        self.assertEqual(0, DAG.get_num_task_instances(test_dag_id, ['fakename'],
+            session=session))
+        self.assertEqual(4, DAG.get_num_task_instances(test_dag_id, [test_task_id],
+            session=session))
+        self.assertEqual(4, DAG.get_num_task_instances(test_dag_id,
+            ['fakename', test_task_id], session=session))
+        self.assertEqual(1, DAG.get_num_task_instances(test_dag_id, [test_task_id],
+            states=[None], session=session))
+        self.assertEqual(2, DAG.get_num_task_instances(test_dag_id, [test_task_id],
+            states=[State.RUNNING], session=session))
+        self.assertEqual(3, DAG.get_num_task_instances(test_dag_id, [test_task_id],
+            states=[None, State.RUNNING], session=session))
+        self.assertEqual(4, DAG.get_num_task_instances(test_dag_id, [test_task_id],
+            states=[None, State.QUEUED, State.RUNNING], session=session))
+        session.close()
+
 
 class DagRunTest(unittest.TestCase):
 
