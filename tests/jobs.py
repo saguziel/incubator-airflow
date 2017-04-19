@@ -370,7 +370,7 @@ class BackfillJobTest(unittest.TestCase):
 
         dag.clear()
         dr = dag.create_dagrun(run_id='test',
-                               state=State.RUNNING,
+                               state=State.SUCCESS,
                                execution_date=DEFAULT_DATE,
                                start_date=DEFAULT_DATE)
         executor = TestExecutor(do_update=True)
