@@ -1746,6 +1746,7 @@ class BackfillJob(BaseJob):
 
             # explictely mark running as we can fill gaps
             run.state = State.RUNNING
+            run.run_id = run_id
             run.verify_integrity(session=session)
 
             # for some reason if we dont refresh the reference to run is lost
