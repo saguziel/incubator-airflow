@@ -237,6 +237,21 @@
           }
         });
       });
+      $.getJSON("{{ url_for('api_experimental.latest_dag_runs') }}", function(data) {
+        $.each(data["items"], function() {
+          var link = $("<a>", {
+            href: this.dag_run_url,
+            text: this.execution_date
+          });
+          var info_icon = $('<span>', {
+            "aria-hidden": "true",
+            id: "statuses_info",
+            title: "Start Date: " + this.start_date,
+            "class": "glyphicon glyphicon-info-sign"
+          });
+          $('.latest_dag_run.' + this.dag_id).append(link).append(info_icon);
+        });
+      });
       d3.json("{{ url_for('airflow.dag_stats') }}", function(error, json) {
         for(var dag_id in json) {
             states = json[dag_id];
