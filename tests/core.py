@@ -878,8 +878,12 @@ class CoreTest(unittest.TestCase):
 
     def test_run_task_twice(self):
         """If two copies of a TI run, the new one should die, and old should live"""
+        dagbag = models.DagBag(
+            dag_folder=TEST_DAG_FOLDER,
+            include_examples=False,
+        )
         TI = models.TaskInstance
-        dag = self.dagbag.dags.get('sleep_forever_dag')
+        dag = dagbag.dags.get('sleep_forever_dag')
         task = dag.task_dict.get('sleeps_forever')
     
         ti = TI(task=task, execution_date=DEFAULT_DATE)
@@ -891,19 +895,22 @@ class CoreTest(unittest.TestCase):
         p1 = multiprocessing.Process(target=job1.run)
         p2 = multiprocessing.Process(target=job2.run)
         try:
-            session = settings.Session()
             p1.start()
             start_time = timetime()
-            while ti.state != State.RUNNING and timetime() - start_time <= 5.0:
-                sleep(0.5)
-                ti.refresh_from_db(session=session)
+            sleep(5.0) # must wait for session to be created on p1
+            settings.engine.dispose()
+            session = settings.Session()
+            ti.refresh_from_db(session=session)
             self.assertEqual(State.RUNNING, ti.state)
             p1pid = ti.pid
+            settings.engine.dispose()
             p2.start()
             p2.join(5) # wait 5 seconds until termination
             self.assertFalse(p2.is_alive())
             self.assertTrue(p1.is_alive())
 
+            settings.engine.dispose()
+            session = settings.Session()
             ti.refresh_from_db(session=session)
             self.assertEqual(State.RUNNING, ti.state)
             self.assertEqual(p1pid, ti.pid)
