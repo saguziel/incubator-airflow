@@ -1021,11 +1021,13 @@ class SchedulerJob(BaseJob):
                     self.logger.info("No more slots free")
                     # Can't schedule any more since there are no more open slots.
                     break
-
                 if self.executor.has_task(task_instance):
+                    '''
                     self.logger.debug("Not handling task {} as the executor reports it is running"
                                       .format(task_instance.key))
                     continue
+                    '''
+                    self.logger.error("Executor is aware of {}, but executing anyway".format(task_instance.key))
 
                 if simple_dag_bag.get_dag(task_instance.dag_id).is_paused:
                     self.logger.info("Not executing queued {} since {} is paused"
@@ -1438,7 +1440,7 @@ class SchedulerJob(BaseJob):
                                                           State.NONE)
 
                 self._execute_task_instances(simple_dag_bag,
-                                             (State.SCHEDULED,))
+                                             (State.SCHEDULED,State.QUEUED,))
 
             # Call hearbeats
             self.logger.info("Heartbeating the executor")
