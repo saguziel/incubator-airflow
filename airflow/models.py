@@ -3835,16 +3835,17 @@ class DagStat(Base):
         qry.delete(synchronize_session='fetch')
         session.commit()
 
-        qry = (
-            session.query(DagRun.dag_id, DagRun.state, func.count('*'))
-            .filter(DagRun.dag_id.in_(dirty_ids))
-            .group_by(DagRun.dag_id, DagRun.state)
-        )
+        if dirty_ids:
+            qry = (
+                session.query(DagRun.dag_id, DagRun.state, func.count('*'))
+                .filter(DagRun.dag_id.in_(dirty_ids))
+                .group_by(DagRun.dag_id, DagRun.state)
+            )
 
-        for dag_id, state, count in qry:
-            session.add(DagStat(dag_id=dag_id, state=state, count=count))
+            for dag_id, state, count in qry:
+                session.add(DagStat(dag_id=dag_id, state=state, count=count))
 
-        session.commit()
+            session.commit()
 
 
 class DagRun(Base):
