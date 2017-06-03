@@ -106,7 +106,7 @@ class HttpSensorTests(unittest.TestCase):
             task_id='http_sensor_poke_exception',
             http_conn_id='http_default',
             endpoint='',
-            params={},
+            request_params={},
             response_check=resp_check,
             poke_interval=5)
         with self.assertRaisesRegexp(AirflowException, 'AirflowException raised here!'):

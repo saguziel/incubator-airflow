@@ -1952,7 +1952,7 @@ class HttpOpSensorTest(unittest.TestCase):
             task_id='http_sensor_check',
             conn_id='http_default',
             endpoint='/search',
-            params={"client": "ubuntu", "q": "airflow"},
+            request_params={"client": "ubuntu", "q": "airflow"},
             headers={},
             response_check=lambda response: ("airbnb/airflow" in response.text),
             poke_interval=5,
