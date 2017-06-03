@@ -31,6 +31,7 @@ from airflow.exceptions import AirflowException, AirflowSensorTimeout, AirflowSk
 from airflow.models import BaseOperator, TaskInstance
 from airflow.hooks.base_hook import BaseHook
 from airflow.hooks.hdfs_hook import HDFSHook
+from airflow.hooks.http_hook import HttpHook
 from airflow.utils.state import State
 from airflow.utils.decorators import apply_defaults
 
@@ -624,9 +625,10 @@ class HttpSensor(BaseSensorOperator):
     """
     Executes a HTTP get statement and returns False on failure:
         404 not found or response_check function returned False
-
     :param http_conn_id: The connection to run the sensor against
     :type http_conn_id: string
+    :param method: The HTTP request method to use
+    :type method: string
     :param endpoint: The relative part of the full url
     :type endpoint: string
     :param request_params: The parameters to be added to the GET url
@@ -642,12 +644,13 @@ class HttpSensor(BaseSensorOperator):
         depends on the option that's being modified.
     """
 
-    template_fields = ('endpoint',)
+    template_fields = ('endpoint', 'request_params')
 
     @apply_defaults
     def __init__(self,
                  endpoint,
                  http_conn_id='http_default',
+                 method='GET',
                  request_params=None,
                  headers=None,
                  response_check=None,
@@ -660,7 +663,9 @@ class HttpSensor(BaseSensorOperator):
         self.extra_options = extra_options or {}
         self.response_check = response_check
 
-        self.hook = hooks.http_hook.HttpHook(method='GET', http_conn_id=http_conn_id)
+        self.hook = HttpHook(
+            method=method,
+            http_conn_id=http_conn_id)
 
     def poke(self, context):
         logging.info('Poking: ' + self.endpoint)
