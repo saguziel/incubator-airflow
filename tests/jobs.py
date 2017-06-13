@@ -471,83 +471,69 @@ class BackfillJobTest(unittest.TestCase):
         ti = TI(task1, dr.execution_date)
         ti.refresh_from_db()
 
-        ti_status = BackfillJob._DagRunTaskStatus()
+        started = {}
+        tasks_to_run = {}
+        failed = set()
+        succeeded = set()
+        started = {}
+        skipped = set()
 
         # test for success
         ti.set_state(State.SUCCESS, session)
-        ti_status.started[ti.key] = ti
-        job._update_counters(ti_status=ti_status)
-        self.assertTrue(len(ti_status.started) == 0)
-        self.assertTrue(len(ti_status.succeeded) == 1)
-        self.assertTrue(len(ti_status.skipped) == 0)
-        self.assertTrue(len(ti_status.failed) == 0)
-        self.assertTrue(len(ti_status.to_run) == 0)
+        started[ti.key] = ti
+        job._update_counters(started=started, succeeded=succeeded,
+                                     skipped=skipped, failed=failed,
+                                     tasks_to_run=tasks_to_run)
+        self.assertTrue(len(started) == 0)
+        self.assertTrue(len(succeeded) == 1)
+        self.assertTrue(len(skipped) == 0)
+        self.assertTrue(len(failed) == 0)
+        self.assertTrue(len(tasks_to_run) == 0)
 
-        ti_status.succeeded.clear()
+        succeeded.clear()
 
         # test for skipped
         ti.set_state(State.SKIPPED, session)
-        ti_status.started[ti.key] = ti
-        job._update_counters(ti_status=ti_status)
-        self.assertTrue(len(ti_status.started) == 0)
-        self.assertTrue(len(ti_status.succeeded) == 0)
-        self.assertTrue(len(ti_status.skipped) == 1)
-        self.assertTrue(len(ti_status.failed) == 0)
-        self.assertTrue(len(ti_status.to_run) == 0)
+        started[ti.key] = ti
+        job._update_counters(started=started, succeeded=succeeded,
+                                     skipped=skipped, failed=failed,
+                                     tasks_to_run=tasks_to_run)
+        self.assertTrue(len(started) == 0)
+        self.assertTrue(len(succeeded) == 0)
+        self.assertTrue(len(skipped) == 1)
+        self.assertTrue(len(failed) == 0)
+        self.assertTrue(len(tasks_to_run) == 0)
 
-        ti_status.skipped.clear()
+        skipped.clear()
 
         # test for failed
         ti.set_state(State.FAILED, session)
-        ti_status.started[ti.key] = ti
-        job._update_counters(ti_status=ti_status)
-        self.assertTrue(len(ti_status.started) == 0)
-        self.assertTrue(len(ti_status.succeeded) == 0)
-        self.assertTrue(len(ti_status.skipped) == 0)
-        self.assertTrue(len(ti_status.failed) == 1)
-        self.assertTrue(len(ti_status.to_run) == 0)
+        started[ti.key] = ti
+        job._update_counters(started=started, succeeded=succeeded,
+                                     skipped=skipped, failed=failed,
+                                     tasks_to_run=tasks_to_run)
+        self.assertTrue(len(started) == 0)
+        self.assertTrue(len(succeeded) == 0)
+        self.assertTrue(len(skipped) == 0)
+        self.assertTrue(len(failed) == 1)
+        self.assertTrue(len(tasks_to_run) == 0)
 
-        ti_status.failed.clear()
+        failed.clear()
 
         # test for reschedule
         # test for failed
         ti.set_state(State.NONE, session)
-        ti_status.started[ti.key] = ti
-        job._update_counters(ti_status=ti_status)
-        self.assertTrue(len(ti_status.started) == 0)
-        self.assertTrue(len(ti_status.succeeded) == 0)
-        self.assertTrue(len(ti_status.skipped) == 0)
-        self.assertTrue(len(ti_status.failed) == 0)
-        self.assertTrue(len(ti_status.to_run) == 1)
+        started[ti.key] = ti
+        job._update_counters(started=started, succeeded=succeeded,
+                                     skipped=skipped, failed=failed,
+                                     tasks_to_run=tasks_to_run)
+        self.assertTrue(len(started) == 0)
+        self.assertTrue(len(succeeded) == 0)
+        self.assertTrue(len(skipped) == 0)
+        self.assertTrue(len(failed) == 0)
+        self.assertTrue(len(tasks_to_run) == 1)
 
         session.close()
-
-    def test_dag_get_run_dates(self):
-
-        def get_test_dag_for_backfill(schedule_interval=None):
-            dag = DAG(
-                dag_id='test_get_dates',
-                start_date=DEFAULT_DATE,
-                schedule_interval=schedule_interval)
-            DummyOperator(
-                task_id='dummy',
-                dag=dag,
-                owner='airflow')
-            return dag
-
-        test_dag = get_test_dag_for_backfill()
-        self.assertEqual([DEFAULT_DATE], test_dag.get_run_dates(
-            start_date=DEFAULT_DATE,
-            end_date=DEFAULT_DATE))
-
-        test_dag = get_test_dag_for_backfill(schedule_interval="@hourly")
-        self.assertEqual([DEFAULT_DATE - datetime.timedelta(hours=3),
-                          DEFAULT_DATE - datetime.timedelta(hours=2),
-                          DEFAULT_DATE - datetime.timedelta(hours=1),
-                          DEFAULT_DATE],
-                         test_dag.get_run_dates(
-                             start_date=DEFAULT_DATE - datetime.timedelta(hours=3),
-                             end_date=DEFAULT_DATE,))
 
 
 class LocalTaskJobTest(unittest.TestCase):
