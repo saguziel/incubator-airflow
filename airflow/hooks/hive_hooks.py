@@ -383,7 +383,9 @@ class HiveCliHook(BaseHook):
                 hql += "PARTITIONED BY ({pfields})\n"
             hql += "ROW FORMAT DELIMITED\n"
             hql += "FIELDS TERMINATED BY '{delimiter}'\n"
-            hql += "STORED AS textfile;"
+            hql += "STORED AS textfile\n"
+            hql += "TBLPROPERTIES('abb_retention_days'='14')\n"
+            hql += ";"
         hql = hql.format(**locals())
         logging.info(hql)
         self.run_cli(hql)
