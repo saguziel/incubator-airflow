@@ -1083,8 +1083,8 @@ class SchedulerJob(BaseJob):
 
 
                 if self.executor.has_task(task_instance):
-                    self.logger.debug("Not handling task {} as the executor " + 
-                                      "reports it is running"
+                    self.logger.debug(("Not handling task {} as the executor " +
+                                      "reports it is running")
                                       .format(task_instance.key))
                     continue
                 executable_tis.append(task_instance)
@@ -1115,10 +1115,12 @@ class SchedulerJob(BaseJob):
             return []
 
         TI = models.TaskInstance
-        filter_for_ti_state_change = ([and_(TI.dag_id == ti.dag_id,
-                                  TI.task_id == ti.task_id,
-                                  TI.execution_date == ti.execution_date)
-                             for ti in task_instances])
+        filter_for_ti_state_change = (
+            [and_(
+                TI.dag_id == ti.dag_id,
+                TI.task_id == ti.task_id,
+                TI.execution_date == ti.execution_date)
+                for ti in task_instances])
         tis_to_set_to_queued = (
             session
             .query(TI)
@@ -1128,7 +1130,7 @@ class SchedulerJob(BaseJob):
             .with_for_update()
             .all())
         if len(tis_to_set_to_queued) == 0:
-            logger.info("No tasks were able to have their state changed to queued.")
+            self.logger.info("No tasks were able to have their state changed to queued.")
             session.commit()
             return []
 
@@ -1139,7 +1141,6 @@ class SchedulerJob(BaseJob):
                                          if not task_instance.queued_dttm
                                          else task_instance.queued_dttm)
             session.merge(task_instance)
-
 
         # save which TIs we set before session expires them
         filter_for_ti_enqueue = ([and_(TI.dag_id == ti.dag_id,
@@ -1158,12 +1159,10 @@ class SchedulerJob(BaseJob):
         task_instance_str = "\n\t".join(
             ["{}".format(x) for x in tis_to_be_queued])
         self.logger.info("Setting the follow tasks to queued state:\n\t{}"
-                         .format(tis_to_be_queued))
+                         .format(task_instance_str))
         return tis_to_be_queued
 
-    @provide_session
-    def _enqueue_task_instances_with_queued_state(self, simple_dag_bag,
-                                                  task_instances, session=None):
+    def _enqueue_task_instances_with_queued_state(self, simple_dag_bag, task_instances):
         """
         Takes task_instances, which should have been set to queued, and enqueues them
         with the executor.
@@ -1239,8 +1238,7 @@ class SchedulerJob(BaseJob):
             session=session)
         self._enqueue_task_instances_with_queued_state(
             simple_dag_bag,
-            tis_with_state_changed,
-            session=session)
+            tis_with_state_changed)
         session.commit()
 
     def _process_dags(self, dagbag, dags, tis_out):
