@@ -969,23 +969,9 @@ class SchedulerJob(BaseJob):
                 tis_changed, new_state))
 
     @provide_session
-    def _execute_task_instances(self,
-                                simple_dag_bag,
-                                states,
-                                session=None):
-        """
-        Fetches task instances from ORM in the specified states, figures
-        out pool limits, and sends them to the executor for execution.
+    def _find_executable_task_instances(self, simple_dag_bag, states, session=None):
+        executable_tis = []
 
-        :param simple_dag_bag: TaskInstances associated with DAGs in the
-        simple_dag_bag will be fetched from the DB and executed
-        :type simple_dag_bag: SimpleDagBag
-        :param executor: the executor that runs task instances
-        :type executor: BaseExecutor
-        :param states: Execute TaskInstances in these states
-        :type states: Tuple[State]
-        :return: None
-        """
         # Get all the queued task instances from associated with scheduled
         # DagRuns.
         TI = models.TaskInstance
@@ -1010,7 +996,7 @@ class SchedulerJob(BaseJob):
         # Put one task instance on each line
         if len(task_instances_to_examine) == 0:
             self.logger.info("No tasks to send to the executor")
-            return
+            return executable_tis
 
         task_instance_str = "\n\t".join(
             ["{}".format(x) for x in task_instances_to_examine])
@@ -1086,60 +1072,111 @@ class SchedulerJob(BaseJob):
                     self.logger.debug("Not handling task {} as the executor reports it is running"
                                       .format(task_instance.key))
                     continue
-
-                command = " ".join(TI.generate_command(
-                    task_instance.dag_id,
-                    task_instance.task_id,
-                    task_instance.execution_date,
-                    local=True,
-                    mark_success=False,
-                    ignore_all_deps=False,
-                    ignore_depends_on_past=False,
-                    ignore_task_deps=False,
-                    ignore_ti_state=False,
-                    pool=task_instance.pool,
-                    file_path=simple_dag_bag.get_dag(task_instance.dag_id).full_filepath,
-                    pickle_id=simple_dag_bag.get_dag(task_instance.dag_id).pickle_id))
-
-                priority = task_instance.priority_weight
-                queue = task_instance.queue
-                self.logger.info("Sending to executor {} with priority {} and queue {}"
-                                 .format(task_instance.key, priority, queue))
-
-                # Set the state to queued
-                task_instance.refresh_from_db(lock_for_update=True, session=session)
-                if task_instance.state not in states:
-                    self.logger.info("Task {} was set to {} outside this scheduler."
-                                     .format(task_instance.key, task_instance.state))
-                    session.commit()
-                    continue
-
-                self.logger.info("Setting state of {} to {}".format(
-                    task_instance.key, State.QUEUED))
-                task_instance.state = State.QUEUED
-                task_instance.queued_dttm = (datetime.now()
-                                             if not task_instance.queued_dttm
-                                             else task_instance.queued_dttm)
-                session.merge(task_instance)
-                session.commit()
-
-                # These attributes will be lost after the object expires, so save them.
-                task_id_ = task_instance.task_id
-                dag_id_ = task_instance.dag_id
-                execution_date_ = task_instance.execution_date
-                make_transient(task_instance)
-                task_instance.task_id = task_id_
-                task_instance.dag_id = dag_id_
-                task_instance.execution_date = execution_date_
-
-                self.executor.queue_command(
-                    task_instance,
-                    command,
-                    priority=priority,
-                    queue=queue)
-
+                executable_tis.append(task_instance)
                 open_slots -= 1
                 dag_id_to_possibly_running_task_count[dag_id] += 1
+        return executable_tis
+
+    @provide_session
+    def _execute_task_instances(self,
+                                simple_dag_bag,
+                                states,
+                                session=None):
+        """
+        Fetches task instances from ORM in the specified states, figures
+        out pool limits, and sends them to the executor for execution.
+
+        :param simple_dag_bag: TaskInstances associated with DAGs in the
+        simple_dag_bag will be fetched from the DB and executed
+        :type simple_dag_bag: SimpleDagBag
+        :param executor: the executor that runs task instances
+        :type executor: BaseExecutor
+        :param states: Execute TaskInstances in these states
+        :type states: Tuple[State]
+        :return: None
+        """
+        executable_tis = self._find_executable_task_instances(simple_dag_bag, states,
+                                                              session=session)
+        task_instance_str = "\n\t".join(
+            ["{}".format(x) for x in executable_tis])
+        self.logger.info("Tasks confirmed for execution:\n\t{}".format(task_instance_str))
+
+        if len(executable_tis) == 0:
+            return
+
+        TI = models.TaskInstance
+        filter_for_query = ([and_(TI.dag_id == ti.dag_id,
+                                  TI.task_id == ti.task_id,
+                                  TI.execution_date == ti.execution_date)
+                             for ti in executable_tis])
+        tis_to_set_to_queued = (
+            session
+            .query(TI)
+            .filter(
+                or_(*filter_for_query),
+                TI.state.in_(states))
+            .with_for_update()
+            .all())
+
+        # set TIs to queued state
+        for task_instance in tis_to_set_to_queued:
+            self.logger.info("Setting state of {} to {}".format(
+                task_instance.key, State.QUEUED))
+            task_instance.state = State.QUEUED
+            task_instance.queued_dttm = (datetime.now()
+                                         if not task_instance.queued_dttm
+                                         else task_instance.queued_dttm)
+            session.merge(task_instance)
+
+        # save which TIs we set before session expires them
+        filter_for_query = ([and_(TI.dag_id == ti.dag_id,
+                                  TI.task_id == ti.task_id,
+                                  TI.execution_date == ti.execution_date)
+                             for ti in tis_to_set_to_queued])
+        session.commit()
+        if len(tis_to_set_to_queued) == 0:
+            return
+        tis_to_be_queued = (
+            session
+            .query(TI)
+            .filter(or_(*filter_for_query))
+            .all())
+        # actually enqueue them
+        for task_instance in tis_to_be_queued:
+            command = " ".join(TI.generate_command(
+                task_instance.dag_id,
+                task_instance.task_id,
+                task_instance.execution_date,
+                local=True,
+                mark_success=False,
+                ignore_all_deps=False,
+                ignore_depends_on_past=False,
+                ignore_task_deps=False,
+                ignore_ti_state=False,
+                pool=task_instance.pool,
+                file_path=simple_dag_bag.get_dag(task_instance.dag_id).full_filepath,
+                pickle_id=simple_dag_bag.get_dag(task_instance.dag_id).pickle_id))
+
+            priority = task_instance.priority_weight
+            queue = task_instance.queue
+            self.logger.info("Sending to executor {} with priority {} and queue {}"
+                             .format(task_instance.key, priority, queue))
+
+            # save attributes so sqlalchemy doesnt expire them
+            copy_dag_id = task_instance.dag_id
+            copy_task_id = task_instance.task_id
+            copy_execution_date = task_instance.execution_date
+            make_transient(task_instance)
+            task_instance.dag_id = copy_dag_id
+            task_instance.task_id = copy_task_id
+            task_instance.execution_date = copy_execution_date
+
+            self.executor.queue_command(
+                task_instance,
+                command,
+                priority=priority,
+                queue=queue)
+        session.commit()
 
     def _process_dags(self, dagbag, dags, tis_out):
         """
