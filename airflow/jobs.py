@@ -970,10 +970,24 @@ class SchedulerJob(BaseJob):
 
     @provide_session
     def _find_executable_task_instances(self, simple_dag_bag, states, session=None):
+        """
+        Finds TIs that are ready for execution with respect to pool limits,
+        dag concurrency, executor state, and priority.
+
+        :param simple_dag_bag: TaskInstances associated with DAGs in the
+        simple_dag_bag will be fetched from the DB and executed
+        :type simple_dag_bag: SimpleDagBag
+        :param executor: the executor that runs task instances
+        :type executor: BaseExecutor
+        :param states: Execute TaskInstances in these states
+        :type states: Tuple[State]
+        :return: List[TaskInstance]
+        """
         executable_tis = []
 
         # Get all the queued task instances from associated with scheduled
-        # DagRuns.
+        # DagRuns which are not backfilled, in the given states,
+        # and the dag is not pasued
         TI = models.TaskInstance
         DR = models.DagRun
         DM = models.DagModel
@@ -993,11 +1007,11 @@ class SchedulerJob(BaseJob):
             .all()
         )
 
-        # Put one task instance on each line
         if len(task_instances_to_examine) == 0:
-            self.logger.info("No tasks to send to the executor")
+            self.logger.info("No tasks to consider for execution.")
             return executable_tis
 
+        # Put one task instance on each line
         task_instance_str = "\n\t".join(
             ["{}".format(x) for x in task_instances_to_examine])
         self.logger.info("Tasks up for execution:\n\t{}".format(task_instance_str))
@@ -1069,13 +1083,132 @@ class SchedulerJob(BaseJob):
 
 
                 if self.executor.has_task(task_instance):
-                    self.logger.debug("Not handling task {} as the executor reports it is running"
+                    self.logger.debug("Not handling task {} as the executor " + 
+                                      "reports it is running"
                                       .format(task_instance.key))
                     continue
                 executable_tis.append(task_instance)
                 open_slots -= 1
                 dag_id_to_possibly_running_task_count[dag_id] += 1
+
+        task_instance_str = "\n\t".join(
+            ["{}".format(x) for x in executable_tis])
+        self.logger.info("Setting the follow tasks to queued state:\n\t{}"
+                         .format(task_instance_str))
         return executable_tis
+
+    @provide_session
+    def _change_state_for_executable_task_instances(self, task_instances,
+                                                    acceptable_states, session=None):
+        """
+        Changes the state of task instances in the list with one of the given states
+        to QUEUED atomically, and returns the TIs changed.
+
+        :param task_instances: TaskInstances to change the state of
+        :type task_instances: List[TaskInstance]
+        :param acceptable_states: Filters the TaskInstances updated to be in these states
+        :type acceptable_states: Iterable[State]
+        :return: List[TaskInstance]
+        """
+        if len(task_instances) == 0:
+            session.commit()
+            return []
+
+        TI = models.TaskInstance
+        filter_for_ti_state_change = ([and_(TI.dag_id == ti.dag_id,
+                                  TI.task_id == ti.task_id,
+                                  TI.execution_date == ti.execution_date)
+                             for ti in task_instances])
+        tis_to_set_to_queued = (
+            session
+            .query(TI)
+            .filter(
+                or_(*filter_for_ti_state_change),
+                TI.state.in_(acceptable_states))
+            .with_for_update()
+            .all())
+        if len(tis_to_set_to_queued) == 0:
+            logger.info("No tasks were able to have their state changed to queued.")
+            session.commit()
+            return []
+
+        # set TIs to queued state
+        for task_instance in tis_to_set_to_queued:
+            task_instance.state = State.QUEUED
+            task_instance.queued_dttm = (datetime.now()
+                                         if not task_instance.queued_dttm
+                                         else task_instance.queued_dttm)
+            session.merge(task_instance)
+
+
+        # save which TIs we set before session expires them
+        filter_for_ti_enqueue = ([and_(TI.dag_id == ti.dag_id,
+                                  TI.task_id == ti.task_id,
+                                  TI.execution_date == ti.execution_date)
+                             for ti in tis_to_set_to_queued])
+        session.commit()
+
+        # requery in batch since above was expired by commit
+        tis_to_be_queued = (
+            session
+            .query(TI)
+            .filter(or_(*filter_for_ti_enqueue))
+            .all())
+
+        task_instance_str = "\n\t".join(
+            ["{}".format(x) for x in tis_to_be_queued])
+        self.logger.info("Setting the follow tasks to queued state:\n\t{}"
+                         .format(tis_to_be_queued))
+        return tis_to_be_queued
+
+    @provide_session
+    def _enqueue_task_instances_with_queued_state(self, simple_dag_bag,
+                                                  task_instances, session=None):
+        """
+        Takes task_instances, which should have been set to queued, and enqueues them
+        with the executor.
+
+        :param task_instances: TaskInstances to enqueue
+        :type task_instances: List[TaskInstance]
+        :param simple_dag_bag: Should contains all of the task_instances' dags
+        :type simple_dag_bag: SimpleDagBag
+        """
+        TI = models.TaskInstance
+        # actually enqueue them
+        for task_instance in task_instances:
+            command = " ".join(TI.generate_command(
+                task_instance.dag_id,
+                task_instance.task_id,
+                task_instance.execution_date,
+                local=True,
+                mark_success=False,
+                ignore_all_deps=False,
+                ignore_depends_on_past=False,
+                ignore_task_deps=False,
+                ignore_ti_state=False,
+                pool=task_instance.pool,
+                file_path=simple_dag_bag.get_dag(task_instance.dag_id).full_filepath,
+                pickle_id=simple_dag_bag.get_dag(task_instance.dag_id).pickle_id))
+
+            priority = task_instance.priority_weight
+            queue = task_instance.queue
+            self.logger.info("Sending {} to executor with priority {} and queue {}"
+                             .format(task_instance.key, priority, queue))
+
+            # save attributes so sqlalchemy doesnt expire them
+            copy_dag_id = task_instance.dag_id
+            copy_task_id = task_instance.task_id
+            copy_execution_date = task_instance.execution_date
+            make_transient(task_instance)
+            task_instance.dag_id = copy_dag_id
+            task_instance.task_id = copy_task_id
+            task_instance.execution_date = copy_execution_date
+
+            self.executor.queue_command(
+                task_instance,
+                command,
+                priority=priority,
+                queue=queue)
 
     @provide_session
     def _execute_task_instances(self,
@@ -1097,85 +1230,14 @@ class SchedulerJob(BaseJob):
         """
         executable_tis = self._find_executable_task_instances(simple_dag_bag, states,
                                                               session=session)
-        task_instance_str = "\n\t".join(
-            ["{}".format(x) for x in executable_tis])
-        self.logger.info("Tasks confirmed for execution:\n\t{}".format(task_instance_str))
-
-        if len(executable_tis) == 0:
-            return
-
-        TI = models.TaskInstance
-        filter_for_query = ([and_(TI.dag_id == ti.dag_id,
-                                  TI.task_id == ti.task_id,
-                                  TI.execution_date == ti.execution_date)
-                             for ti in executable_tis])
-        tis_to_set_to_queued = (
-            session
-            .query(TI)
-            .filter(
-                or_(*filter_for_query),
-                TI.state.in_(states))
-            .with_for_update()
-            .all())
-
-        # set TIs to queued state
-        for task_instance in tis_to_set_to_queued:
-            self.logger.info("Setting state of {} to {}".format(
-                task_instance.key, State.QUEUED))
-            task_instance.state = State.QUEUED
-            task_instance.queued_dttm = (datetime.now()
-                                         if not task_instance.queued_dttm
-                                         else task_instance.queued_dttm)
-            session.merge(task_instance)
-
-        # save which TIs we set before session expires them
-        filter_for_query = ([and_(TI.dag_id == ti.dag_id,
-                                  TI.task_id == ti.task_id,
-                                  TI.execution_date == ti.execution_date)
-                             for ti in tis_to_set_to_queued])
-        session.commit()
-        if len(tis_to_set_to_queued) == 0:
-            return
-        tis_to_be_queued = (
-            session
-            .query(TI)
-            .filter(or_(*filter_for_query))
-            .all())
-        # actually enqueue them
-        for task_instance in tis_to_be_queued:
-            command = " ".join(TI.generate_command(
-                task_instance.dag_id,
-                task_instance.task_id,
-                task_instance.execution_date,
-                local=True,
-                mark_success=False,
-                ignore_all_deps=False,
-                ignore_depends_on_past=False,
-                ignore_task_deps=False,
-                ignore_ti_state=False,
-                pool=task_instance.pool,
-                file_path=simple_dag_bag.get_dag(task_instance.dag_id).full_filepath,
-                pickle_id=simple_dag_bag.get_dag(task_instance.dag_id).pickle_id))
-
-            priority = task_instance.priority_weight
-            queue = task_instance.queue
-            self.logger.info("Sending to executor {} with priority {} and queue {}"
-                             .format(task_instance.key, priority, queue))
-
-            # save attributes so sqlalchemy doesnt expire them
-            copy_dag_id = task_instance.dag_id
-            copy_task_id = task_instance.task_id
-            copy_execution_date = task_instance.execution_date
-            make_transient(task_instance)
-            task_instance.dag_id = copy_dag_id
-            task_instance.task_id = copy_task_id
-            task_instance.execution_date = copy_execution_date
-
-            self.executor.queue_command(
-                task_instance,
-                command,
-                priority=priority,
-                queue=queue)
+        tis_with_state_changed = self._change_state_for_executable_task_instances(
+            executable_tis,
+            states,
+            session=session)
+        self._enqueue_task_instances_with_queued_state(
+            simple_dag_bag,
+            tis_with_state_changed,
+            session=session)
         session.commit()
 
     def _process_dags(self, dagbag, dags, tis_out):
