@@ -717,8 +717,63 @@ class SchedulerJobTest(unittest.TestCase):
         ti1.refresh_from_db()
         self.assertEquals(State.SCHEDULED, ti1.state)
 
+    def test_find_executable_task_instances(self):
+        dag_id = 'SchedulerJobTest.test_find_executable_task_instances'
+        task_id_1 = 'dummy'
+        dag = DAG(dag_id=dag_id, start_date=DEFAULT_DATE, concurrency=16)
+        task1 = DummyOperator(dag=dag, task_id=task_id_1)
+        dagbag = SimpleDagBag([dag])
+
+        scheduler = SchedulerJob(**self.default_scheduler_args)
+        session = settings.Session()
+
+        dr1 = scheduler.create_dag_run(dag)
+        dr2 = scheduler.create_dag_run(dag)
+        dr2.run_id = BackfillJob.ID_PREFIX + 'asdf'
+
+        ti_no_dagrun = TI(task1, DEFAULT_DATE - datetime.timedelta(days=1))
+        ti_backfill = TI(task1, dr2.execution_date)
+        ti_with_dagrun = TI(task1, dr1.execution_date)
+        # ti_with_paused
+
+        session.merge(dr2)
+        session.merge(ti_no_dagrun)
+        session.merge(ti_backfill)
+        session.merge(ti_with_dagrun)
+        session.commit()
+
+        res = scheduler._find_executable_task_instances(
+            dagbag,
+            states=[State.SCHEDULED],
+            session=session)
+
+        self.assertEqual(2, len(res))
+        self.assertTrue(any(lambda x: x.key == ti_no_dagrun.key, res))
+        self.assertTrue(any(lambda x: x.key == ti_with_dagrun.key, res))
+        
+    def test_execute_task_instances_pool(self):
+        pass
+
+    def test_change_state_for_executable_task_instances_no_tis(self):
+        pass
+
+    def test_change_state_for_executable_task_instances_no_tis_with_state(self):
+        pass
+
+    def test_change_stte_for_executable_task_instances(self):
+        pass
+
+    def test_enqueue_task_instances_with_queued_state(self):
+        pass
+
+    def test_execute_task_instances(self):
+        pass
+
+    def test_execute_task_instances_nothing(self):
+        pass
+
     def test_execute_task_instances_concurrency(self):
-        dag_id = 'SchedulerJobTest.test_concurrency'
+        dag_id = 'SchedulerJobTest.test_execute_task_instances_concurrency'
         task_id_1 = 'dummy_task'
         task_id_2 = 'dummy_task_nonexistent_queue'
         # important that len(tasks) is less than concurrency
