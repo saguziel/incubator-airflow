@@ -717,7 +717,7 @@ class SchedulerJobTest(unittest.TestCase):
         ti1.refresh_from_db()
         self.assertEquals(State.SCHEDULED, ti1.state)
 
-    def test_concurrency(self):
+    def test_execute_task_instances_concurrency(self):
         dag_id = 'SchedulerJobTest.test_concurrency'
         task_id_1 = 'dummy_task'
         task_id_2 = 'dummy_task_nonexistent_queue'
