@@ -1216,14 +1216,17 @@ class SchedulerJob(BaseJob):
                                 states,
                                 session=None):
         """
-        Fetches task instances from ORM in the specified states, figures
-        out pool limits, and sends them to the executor for execution.
+        Attempts to execute TaskInstances that should be executed by the scheduler.
+
+        There are three steps:
+        1. Pick TIs by priority with the constraint that they are in the expected states
+        and that we do exceed max_active_runs or pool limits.
+        2. Change the state for the TIs above atomically.
+        3. Enqueue the TIs in the executor.
 
         :param simple_dag_bag: TaskInstances associated with DAGs in the
         simple_dag_bag will be fetched from the DB and executed
         :type simple_dag_bag: SimpleDagBag
-        :param executor: the executor that runs task instances
-        :type executor: BaseExecutor
         :param states: Execute TaskInstances in these states
         :type states: Tuple[State]
         :return: None
