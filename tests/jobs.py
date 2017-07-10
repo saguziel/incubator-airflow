@@ -1294,19 +1294,36 @@ class SchedulerJobTest(unittest.TestCase):
         """
 
         dag_id = 'test_start_date_scheduling'
+        a = 0
+        logging.info("statement {}".format(a))
+        a += 1
         dag = self.dagbag.get_dag(dag_id)
+        logging.info("statement {}".format(a))
+        a += 1
         dag.clear()
+        logging.info("statement {}".format(a))
+        a += 1
         self.assertTrue(dag.start_date > DEFAULT_DATE)
+        logging.info("statement {}".format(a))
+        a += 1
 
         scheduler = SchedulerJob(dag_id,
                                  num_runs=2,
                                  **self.default_scheduler_args)
+        logging.info("statement {}".format(a))
+        a += 1
         scheduler.run()
+        logging.info("statement {}".format(a))
+        a += 1
 
         # zero tasks ran
         session = settings.Session()
+        logging.info("statement {}".format(a))
+        a += 1
         self.assertEqual(
             len(session.query(TI).filter(TI.dag_id == dag_id).all()), 0)
+        logging.info("statement {}".format(a))
+        a += 1
 
         # previously, running this backfill would kick off the Scheduler
         # because it would take the most recent run and start from there
@@ -1316,22 +1333,38 @@ class SchedulerJobTest(unittest.TestCase):
             dag=dag,
             start_date=DEFAULT_DATE,
             end_date=DEFAULT_DATE)
+        logging.info("statement {}".format(a))
+        a += 1
         backfill.run()
+        logging.info("statement {}".format(a))
+        a += 1
 
         # one task ran
         session = settings.Session()
+        logging.info("statement {}".format(a))
+        a += 1
         self.assertEqual(
             len(session.query(TI).filter(TI.dag_id == dag_id).all()), 1)
+        logging.info("statement {}".format(a))
+        a += 1
 
         scheduler = SchedulerJob(dag_id,
                                  num_runs=2,
                                  **self.default_scheduler_args)
+        logging.info("statement {}".format(a))
+        a += 1
         scheduler.run()
+        logging.info("statement {}".format(a))
+        a += 1
 
         # still one task
         session = settings.Session()
+        logging.info("statement {}".format(a))
+        a += 1
         self.assertEqual(
             len(session.query(TI).filter(TI.dag_id == dag_id).all()), 1)
+        logging.info("statement {}".format(a))
+        a += 1
 
     def test_scheduler_multiprocessing(self):
         """
