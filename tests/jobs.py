@@ -38,7 +38,7 @@ from airflow.utils.state import State
 from airflow.utils.timeout import timeout
 from airflow.utils.dag_processing import SimpleDagBag
 
-from mock import patch
+from mock import Mock, patch
 from sqlalchemy.orm.session import make_transient
 from tests.executors.test_executor import TestExecutor
 
@@ -915,7 +915,7 @@ class SchedulerJobTest(unittest.TestCase):
         ti2 = TI(task1, dr2.execution_date)
         ti3 = TI(task1, dr3.execution_date)
         ti1.state = State.SCHEDULED
-        ti2.state = State.NONE
+        ti2.state = State.QUEUED
         ti3.state = State.NONE
         session.merge(ti1)
         session.merge(ti2)
@@ -925,23 +925,54 @@ class SchedulerJobTest(unittest.TestCase):
 
         res = scheduler._change_state_for_executable_task_instances(
             [ti1, ti2, ti3],
-            [State.NONE],
+            [State.NONE, State.SCHEDULED],
             session)
         self.assertEqual(2, len(res))
-
-    def test_change_state_for_executable_task_instances(self):
-        pass
+        ti1.refresh_from_db()
+        ti3.refresh_from_db()
+        self.assertEqual(State.QUEUED, ti1.state)
+        self.assertEqual(State.QUEUED, ti3.state)
 
     def test_enqueue_task_instances_with_queued_state(self):
-        pass
+        dag_id = 'SchedulerJobTest.test_enqueue_task_instances_with_queued_state'
+        task_id_1 = 'dummy'
+        dag = DAG(dag_id=dag_id, start_date=DEFAULT_DATE)
+        task1 = DummyOperator(dag=dag, task_id=task_id_1)
+        dagbag = SimpleDagBag([dag])
 
-    def test_execute_task_instances(self):
-        pass
+        scheduler = SchedulerJob(**self.default_scheduler_args)
+        session = settings.Session()
+
+        dr1 = scheduler.create_dag_run(dag)
+
+        ti1 = TI(task1, dr1.execution_date)
+        session.merge(ti1)
+        session.commit()
+
+        mock = Mock()
+        scheduler.executor.queue_command = mock
+        scheduler._enqueue_task_instances_with_queued_state(dagbag, [ti1])
+        mock.assert_called()
 
     def test_execute_task_instances_nothing(self):
-        pass
+        dag_id = 'SchedulerJobTest.test_execute_task_instances_nothing'
+        task_id_1 = 'dummy'
+        dag = DAG(dag_id=dag_id, start_date=DEFAULT_DATE, concurrency=2)
+        task1 = DummyOperator(dag=dag, task_id=task_id_1)
+        dagbag = SimpleDagBag([])
 
-    def test_execute_task_instances_concurrency(self):
+        scheduler = SchedulerJob(**self.default_scheduler_args)
+        session = settings.Session()
+
+        dr1 = scheduler.create_dag_run(dag)
+        ti1 = TI(task1, dr1.execution_date)
+        ti1.state = State.SCHEDULED
+        session.merge(ti1)
+        session.commit()
+
+        self.assertEqual(0, scheduler._execute_task_instances(dagbag, states=[State.SCHEDULED]))
+
+    def test_execute_task_instances(self):
         dag_id = 'SchedulerJobTest.test_execute_task_instances_concurrency'
         task_id_1 = 'dummy_task'
         task_id_2 = 'dummy_task_nonexistent_queue'
@@ -988,7 +1019,7 @@ class SchedulerJobTest(unittest.TestCase):
 
         self.assertEqual(State.RUNNING, dr2.state)
 
-        scheduler._execute_task_instances(dagbag, [State.SCHEDULED])
+        res = scheduler._execute_task_instances(dagbag, [State.SCHEDULED])
 
         # check that concurrency is respected
         ti1.refresh_from_db()
@@ -1000,6 +1031,7 @@ class SchedulerJobTest(unittest.TestCase):
         self.assertEqual(State.RUNNING, ti1.state)
         self.assertEqual(State.RUNNING, ti2.state)
         six.assertCountEqual(self, [State.QUEUED, State.SCHEDULED], [ti3.state, ti4.state])
+        self.assertEqual(1, res)
 
         session.close()
 
