@@ -991,11 +991,10 @@ class SchedulerJob(BaseJob):
         TI = models.TaskInstance
         DR = models.DagRun
         DM = models.DagModel
-        task_instances_to_examine = (
+        ti_query = (
             session
             .query(TI)
             .filter(TI.dag_id.in_(simple_dag_bag.dag_ids))
-            .filter(TI.state.in_(states))
             .outerjoin(DR,
                 and_(DR.dag_id == TI.dag_id,
                      DR.execution_date == TI.execution_date))
@@ -1004,8 +1003,13 @@ class SchedulerJob(BaseJob):
             .outerjoin(DM, DM.dag_id==TI.dag_id)
             .filter(or_(DM.dag_id == None,
                     not_(DM.is_paused)))
-            .all()
         )
+        if None in states:
+            ti_query = ti_query.filter(or_(TI.state == None, TI.state.in_(states)))
+        else:
+            ti_query = ti_query.filter(TI.state.in_(states))
+
+        task_instances_to_examine = ti_query.all()
 
         if len(task_instances_to_examine) == 0:
             self.logger.info("No tasks to consider for execution.")
@@ -1121,12 +1125,18 @@ class SchedulerJob(BaseJob):
                 TI.task_id == ti.task_id,
                 TI.execution_date == ti.execution_date)
                 for ti in task_instances])
-        tis_to_set_to_queued = (
+        ti_query = (
             session
             .query(TI)
-            .filter(
-                or_(*filter_for_ti_state_change),
-                TI.state.in_(acceptable_states))
+            .filter(or_(*filter_for_ti_state_change)))
+
+        if None in acceptable_states:
+            ti_query = ti_query.filter(or_(TI.state == None, TI.state.in_(acceptable_states)))
+        else:
+            ti_query = ti_query.filter(TI.state.in_(acceptable_states))
+
+        tis_to_set_to_queued = (
+            ti_query
             .with_for_update()
             .all())
         if len(tis_to_set_to_queued) == 0:
@@ -1240,6 +1250,7 @@ class SchedulerJob(BaseJob):
             simple_dag_bag,
             tis_with_state_changed)
         session.commit()
+        return len(tis_with_state_changed)
 
     def _process_dags(self, dagbag, dags, tis_out):
         """
