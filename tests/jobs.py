@@ -74,7 +74,8 @@ UNPARSEABLE_DAG_FILE_CONTENTS = 'airflow DAG'
 # Filename to be used for dags that are created in an ad-hoc manner and can be removed/
 # created at runtime
 TEMP_DAG_FILENAME = "temp_dag.py"
-
+TEST_DAGS_FOLDER = os.path.join(
+    os.path.dirname(os.path.realpath(__file__)), 'dags')
 
 class BackfillJobTest(unittest.TestCase):
 
@@ -2349,7 +2350,7 @@ class SchedulerJobTest(unittest.TestCase):
         for file_path in list_py_file_paths(TEST_DAGS_FOLDER):
             detected_files.append(file_path)
         self.assertEqual(sorted(detected_files), sorted(expected_files))
-        
+
     def test_reset_orphaned_tasks_nothing(self):
         """Try with nothing. """
         scheduler = SchedulerJob(**self.default_scheduler_args)
