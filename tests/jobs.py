@@ -731,6 +731,119 @@ class SchedulerJobTest(unittest.TestCase):
         six.assertCountEqual(self, [State.QUEUED, State.SCHEDULED], [ti3.state, ti4.state])
         self.assertEqual(1, res)
 
+    def test_change_state_for_tis_without_dagrun(self):
+        dag = DAG(
+            dag_id='test_change_state_for_tis_without_dagrun',
+            start_date=DEFAULT_DATE)
+
+        DummyOperator(
+            task_id='dummy',
+            dag=dag,
+            owner='airflow')
+
+        dag2 = DAG(
+            dag_id='test_change_state_for_tis_without_dagrun_dont_change',
+            start_date=DEFAULT_DATE)
+
+        DummyOperator(
+            task_id='dummy',
+            dag=dag2,
+            owner='airflow')
+
+        session = settings.Session()
+        dr = dag.create_dagrun(run_id=DagRun.ID_PREFIX,
+                               state=State.RUNNING,
+                               execution_date=DEFAULT_DATE,
+                               start_date=DEFAULT_DATE,
+                               session=session)
+
+        dr2 = dag2.create_dagrun(run_id=DagRun.ID_PREFIX,
+                                 state=State.RUNNING,
+                                 execution_date=DEFAULT_DATE,
+                                 start_date=DEFAULT_DATE,
+                                 session=session)
+
+        ti = dr.get_task_instance(task_id='dummy', session=session)
+        ti.state = State.SCHEDULED
+        session.commit()
+
+        ti2 = dr2.get_task_instance(task_id='dummy', session=session)
+        ti2.state = State.SCHEDULED
+        session.commit()
+
+        dagbag = SimpleDagBag([dag])
+        scheduler = SchedulerJob(num_runs=0, run_duration=0)
+        scheduler._change_state_for_tis_without_dagrun(simple_dag_bag=dagbag,
+                                                       old_states=[State.SCHEDULED, State.QUEUED],
+                                                       new_state=State.NONE,
+                                                       session=session)
+
+        ti.refresh_from_db(session=session)
+        self.assertEqual(ti.state, State.SCHEDULED)
+
+        ti2.refresh_from_db(session=session)
+        self.assertEqual(ti2.state, State.SCHEDULED)
+
+        dr.refresh_from_db(session=session)
+        dr.state = State.FAILED
+
+        # why o why
+        session.merge(dr)
+        session.commit()
+
+        scheduler._change_state_for_tis_without_dagrun(simple_dag_bag=dagbag,
+                                                       old_states=[State.SCHEDULED, State.QUEUED],
+                                                       new_state=State.NONE,
+                                                       session=session)
+        ti.refresh_from_db(session=session)
+        self.assertEqual(ti.state, State.NONE)
+
+        # don't touch ti2
+        ti2.refresh_from_db(session=session)
+        self.assertEqual(ti2.state, State.SCHEDULED)
+
+    def test_execute_helper_reset_orphaned_tasks(self):
+        session = settings.Session()
+        dag = DAG(
+            'test_execute_helper_reset_orphaned_tasks',
+            start_date=DEFAULT_DATE,
+            default_args={'owner': 'owner1'})
+
+        with dag:
+            op1 = DummyOperator(task_id='op1')
+
+        dag.clear()
+        dr = dag.create_dagrun(run_id=DagRun.ID_PREFIX,
+                               state=State.RUNNING,
+                               execution_date=DEFAULT_DATE,
+                               start_date=DEFAULT_DATE,
+                               session=session)
+        dr2 = dag.create_dagrun(run_id=BackfillJob.ID_PREFIX,
+                                state=State.RUNNING,
+                                execution_date=DEFAULT_DATE + datetime.timedelta(1),
+                                start_date=DEFAULT_DATE,
+                                session=session)
+        ti = dr.get_task_instance(task_id=op1.task_id, session=session)
+        ti.state = State.SCHEDULED
+        ti2 = dr2.get_task_instance(task_id=op1.task_id, session=session)
+        ti2.state = State.SCHEDULED
+        session.commit()
+
+        processor = mock.MagicMock()
+        processor.get_last_finish_time.return_value = None
+
+        scheduler = SchedulerJob(num_runs=0, run_duration=0)
+        executor = TestExecutor()
+        scheduler.executor = executor
+
+        scheduler._execute_helper(processor_manager=processor)
+
+        ti = dr.get_task_instance(task_id=op1.task_id, session=session)
+        self.assertEqual(ti.state, State.NONE)
+
+        ti2 = dr2.get_task_instance(task_id=op1.task_id, session=session)
+        self.assertEqual(ti2.state, State.SCHEDULED)
+
     @provide_session
     def evaluate_dagrun(
             self,
