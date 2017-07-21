@@ -363,6 +363,9 @@ child_process_log_directory = {AIRFLOW_HOME}/logs/scheduler
 # associated task instance as failed and will re-schedule the task.
 scheduler_zombie_task_threshold = 300
 
+# tis to query in a scheduler loop, 0 for infinity
+max_tis_per_query = 0
+
 # Turn off scheduler catchup by setting this to False.
 # Default behavior is unchanged and
 # Command Line Backfills still work, but the scheduler
