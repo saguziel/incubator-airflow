@@ -15,6 +15,7 @@
 
 from past.builtins import basestring, unicode
 
+import ast
 import os
 import pkg_resources
 import socket
@@ -47,7 +48,6 @@ from flask._compat import PY2
 from jinja2.sandbox import ImmutableSandboxedEnvironment
 import markdown
 import nvd3
-import ast
 
 from wtforms import (
     Form, SelectField, TextAreaField, PasswordField, StringField, validators)
@@ -237,8 +237,8 @@ def data_profiling_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if (
-                    current_app.config['LOGIN_DISABLED'] or
-                    (not current_user.is_anonymous() and current_user.data_profiling())
+            current_app.config['LOGIN_DISABLED'] or
+            (not current_user.is_anonymous() and current_user.data_profiling())
         ):
             return f(*args, **kwargs)
         else:
@@ -328,7 +328,7 @@ class Airflow(BaseView):
 
         # Processing templated fields
         try:
-            args = eval(chart.default_params)
+            args = ast.literal_eval(chart.default_params)
             if type(args) is not type(dict()):
                 raise AirflowException('Not a dict')
         except:
