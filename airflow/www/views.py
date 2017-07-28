@@ -810,6 +810,42 @@ class Airflow(BaseView):
 
         return jsonify(message=message, next_offset=next_offset)
 
+    @expose('/old_log')
+    @login_required
+    @wwwutils.action_logging
+    def old_log(self):
+        """
+        This is an Airbnb internal temporary endpoint for getting logs
+        with older format like dag_id/task_id/execution_date in S3.
+        It does not load logs from host machine if log can't be found on S3.
+        This endpoint should be removed once ES pipeline is stable.
+        It renders a blank page with log content instead of embedding log
+        into web UI.
+        """
+        dag_id = request.args.get('dag_id')
+        task_id = request.args.get('task_id')
+        execution_date = request.args.get('execution_date')
+        log_filename = os.path.join(dag_id, task_id, execution_date)
+        log = ''
+        remote_log_base = conf.get('core', 'REMOTE_BASE_LOG_FOLDER')
+        if remote_log_base:
+            remote_log_path = os.path.join(remote_log_base, log_filename)
+            remote_log = ""
+            # S3
+            if remote_log_path.startswith('s3:/'):
+                s3_log = log_utils.S3Log()
+                if s3_log.log_exists(remote_log_path):
+                    remote_log += s3_log.read(remote_log_path, return_error=True)
+            # unsupported
+            else:
+                remote_log += '*** Unsupported remote log location.'
+
+            if remote_log:
+                log += ('*** Reading remote log from {}.\n{}\n'.format(
+                    remote_log_path, remote_log))
+
+        return self.render('airflow/code.html', code=log, title='Log')
+
     @expose('/log')
     @login_required
     @wwwutils.action_logging
