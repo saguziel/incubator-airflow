@@ -46,6 +46,7 @@
   {{ lib.form_js() }}
   {{ super() }}
   <script>
+    // TODO: make those constants configurable.
     // Time interval to wait before next log fetching. Default 2s.
     const DELAY = 2e3;
     // Distance away from page bottom to enable auto tailing.
@@ -60,26 +61,16 @@
       return new Promise((resolve) => setTimeout(resolve, delay));
     }
 
-    // Fetch all logs for given try_number
-    function staticLog(try_number) {
-      $.ajax({
-        url: "{{ url_for("airflow.get_log_js") }}",
-        data: {
-          dag_id: "{{ dag_id }}",
-          task_id: "{{ task_id }}",
-          execution_date: "{{ execution_date }}",
-          try_number: try_number,
-          offset: null,
-        },
-      }).then(res => {
-        if (res && res.message) {
-          $(`#try-${try_number}`).append(res.message + '\n');
-        }
-      });
+    // Enable auto tailing only when users scroll down to the bottom
+    // of the page. This prevent auto tailing the page if users want
+    // to view earler rendered messages.
+    function checkAutoTailingCondition() {
+      const docHeight = $(document).height();
+      return $(window).scrollTop() + $(window).height() > docHeight - AUTO_TAILING_OFFSET;
     }
 
     // Streaming log with auto-tailing.
-    function autoTailingLog(try_number, offset=null) {
+    function autoTailingLog(try_number, offset=null, auto_tailing=false) {
       return Promise.resolve(
         $.ajax({
           url: "{{ url_for("airflow.get_log_js") }}",
@@ -92,23 +83,32 @@
           },
         })).then(res => {
           if (res && res.message) {
-            const docHeight = $(document).height();
             $(`#try-${try_number}`).append(res.message + '\n');
             // Auto scroll window to the end if current window location is near the end
-            if($(window).scrollTop() + $(window).height() > docHeight - AUTO_TAILING_OFFSET) {
+            if(auto_tailing && checkAutoTailingCondition()) {
               $("html, body").animate({ scrollTop: $(document).height() }, ANIMATION_SPEED);
             }
           }
-          return recurse().then(() => autoTailingLog(try_number, res.next_offset));
+          // Stop recursive call to backend when error occurs.
+          if (res && res.error) {
+            return;
+          }
+          return recurse().then(() => autoTailingLog(
+            try_number, res.next_offset, auto_tailing));
         });
     }
     $(document).ready(function() {
-      // Lazily load past task instance logs.
-      for(let i = 1; i < TOTAL_ATTEMPTS; i++) {
-        staticLog(i);
+      // Lazily load all past task instance logs.
+      // TODO: We only need to have recursive queries for
+      // latest running task instances. Currently it does not
+      // work well with ElasticSearch becasue ES query only
+      // returns at most 10k documents. We want the ability
+      // to display all logs in the front-end.
+      // An optimation here is to render from latest attempt.
+      for(let i = TOTAL_ATTEMPTS; i >= 1; i--) {
+        // Only auto_tailing the page when streaming the latest attempt.
+        autoTailingLog(i, null, auto_tailing=(i == TOTAL_ATTEMPTS));
       }
-      // Get latest attempt logs with auto-tailing feature.
-      autoTailingLog(Math.max(TOTAL_ATTEMPTS, 1));
     });
   </script>
 {% endblock %}

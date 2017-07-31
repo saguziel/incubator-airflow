@@ -799,16 +799,19 @@ class Airflow(BaseView):
         dag_id = request.args.get('dag_id')
         task_id = request.args.get('task_id')
         execution_date = request.args.get('execution_date')
-        dttm = dateutil.parser.parse(execution_date)
         try_number = request.args.get('try_number')
         offset = request.args.get('offset')
 
-        logs = logging_backend.get_logs(dag_id=dag_id, task_id=task_id,
-            execution_date=execution_date, try_number=try_number, offset=offset)
-        next_offset = offset if not logs else logs[-1].offset
-        message = '\n'.join([log.message for log in logs])
-
-        return jsonify(message=message, next_offset=next_offset)
+        try:
+            logs = logging_backend.get_logs(
+                dag_id=dag_id, task_id=task_id, execution_date=execution_date,
+                try_number=try_number, offset=offset)
+            next_offset = offset if not logs else logs[-1].offset
+            message = '\n'.join([log.message for log in logs])
+            return jsonify(message=message, next_offset=next_offset)
+        except AirflowException as e:
+            message = str(e)
+            return jsonify(message=message, error=True)
 
     @expose('/old_log')
     @login_required

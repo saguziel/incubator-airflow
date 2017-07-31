@@ -14,8 +14,9 @@
 
 import logging
 
+from airflow import AirflowException
 from airflow.logging_backends.base_logging_backend import BaseLoggingBackend
-from elasticsearch import Elasticsearch
+from elasticsearch import Elasticsearch, ElasticsearchException
 from elasticsearch_dsl import Search
 
 
@@ -69,6 +70,11 @@ class ElasticsearchLoggingBackend(BaseLoggingBackend):
         return response
 
     def get_logs(self, **kwargs):
-        response = self._search(**kwargs)
-        logs = [hit for hit in response]
-        return logs
+        try:
+            response = self._search(**kwargs)
+            logs = [hit for hit in response]
+            return logs
+        except ElasticsearchException as e:
+            # Do not swallow the ES error.
+            error_msg = "Unable to read logs from ElasticSearch: {}\n".format(str(e))
+            raise AirflowException(error_msg)
