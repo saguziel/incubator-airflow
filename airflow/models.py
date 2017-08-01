@@ -103,7 +103,7 @@ else:
 _CONTEXT_MANAGER_DAG = None
 
 
-def clear_task_instances(tis, session, activate_dag_runs=True):
+def clear_task_instances(tis, session, activate_dag_runs=True, dag=None):
     """
     Clears a set of task instances, but makes sure the running ones
     get killed.
@@ -114,12 +114,21 @@ def clear_task_instances(tis, session, activate_dag_runs=True):
             if ti.job_id:
                 ti.state = State.SHUTDOWN
                 job_ids.append(ti.job_id)
-        # todo: this creates an issue with the webui tests
-        # elif ti.state != State.REMOVED:
-        #     ti.state = State.NONE
-        #     session.merge(ti)
         else:
-            session.delete(ti)
+            task_id = ti.task_id
+            if dag and dag.has_task(task_id):
+                task = dag.get_task(task_id)
+                task_retries = task.retries
+                ti.max_tries = ti.try_number + task_retries
+            else:
+                # Ignore errors when updating max_tries if dag is None or
+                # task not found in dag since database records could be
+                # outdated. We make max_tries the maximum value of its
+                # original max_tries or the current task try number.
+                ti.max_tries = max(ti.max_tries, ti.try_number)
+            ti.state = State.NONE
+            session.merge(ti)
+
     if job_ids:
         from airflow.jobs import BaseJob as BJ
         for job in session.query(BJ).filter(BJ.id.in_(job_ids)).all():
@@ -732,6 +741,7 @@ class TaskInstance(Base):
     duration = Column(Float)
     state = Column(String(20))
     try_number = Column(Integer, default=0)
+    max_tries = Column(Integer)
     hostname = Column(String(1000))
     unixname = Column(String(1000))
     job_id = Column(Integer)
@@ -758,6 +768,7 @@ class TaskInstance(Base):
         self.pool = task.pool
         self.priority_weight = task.priority_weight_total
         self.try_number = 0
+        self.max_tries = self.task.retries
         self.unixname = getpass.getuser()
         self.run_as_user = task.run_as_user
         if state:
@@ -999,6 +1010,7 @@ class TaskInstance(Base):
             self.start_date = ti.start_date
             self.end_date = ti.end_date
             self.try_number = ti.try_number
+            self.max_tries = ti.max_tries
             self.hostname = ti.hostname
             self.pid = ti.pid
         else:
@@ -1276,8 +1288,8 @@ class TaskInstance(Base):
         # not 0-indexed lists (i.e. Attempt 1 instead of
         # Attempt 0 for the first attempt).
         msg = "Starting attempt {attempt} of {total}".format(
-            attempt=self.try_number % (task.retries + 1) + 1,
-            total=task.retries + 1)
+            attempt=self.try_number + 1,
+            total=self.max_tries + 1)
         self.start_date = datetime.now()
 
         dep_context = DepContext(
@@ -1297,8 +1309,8 @@ class TaskInstance(Base):
                 # instead
                 self.state = State.QUEUED
                 msg = "Queuing attempt {attempt} of {total}".format(
-                    attempt=self.try_number % (task.retries + 1) + 1,
-                    total=task.retries + 1)
+                    attempt=self.try_number + 1,
+                    total=self.max_tries + 1)
                 logging.info(hr + msg + hr)
 
                 self.queued_dttm = datetime.now()
@@ -1430,7 +1442,11 @@ class TaskInstance(Base):
 
         # Let's go deeper
         try:
-            if task.retries and self.try_number % (task.retries + 1) != 0:
+            # try_number is incremented by 1 during task instance run. So the
+            # current task instance try_number is the try_number for the next
+            # task instance run. We only mark task instance as FAILED if the
+            # next task instance try_number exceeds the max_tries.
+            if task.retries and self.try_number <= self.max_tries:
                 self.state = State.UP_FOR_RETRY
                 logging.info('Marking task as UP_FOR_RETRY')
                 if task.email_on_retry and task.email:
@@ -1585,15 +1601,17 @@ class TaskInstance(Base):
         task = self.task
         title = "Airflow alert: {self}".format(**locals())
         exception = str(exception).replace('\n', '<br>')
-        try_ = task.retries + 1
+        # For reporting purposes, we report based on 1-indexed,
+        # not 0-indexed lists (i.e. Try 1 instead of
+        # Try 0 for the first attempt).
         body = (
-            "Try {self.try_number} out of {try_}<br>"
+            "Try {try_number} out of {max_tries}<br>"
             "Exception:<br>{exception}<br>"
             "Log: <a href='{self.log_url}'>Link</a><br>"
             "Host: {self.hostname}<br>"
             "Log file: {self.log_filepath}<br>"
             "Mark success: <a href='{self.mark_success_url}'>Link</a><br>"
-        ).format(**locals())
+        ).format(try_number=self.try_number + 1, max_tries=self.max_tries + 1, **locals())
         send_email(task.email, title, body)
 
     def set_duration(self):
@@ -2289,9 +2307,7 @@ class BaseOperator(object):
     def downstream_task_ids(self):
         return self._downstream_task_ids
 
-    def clear(
-            self, start_date=None, end_date=None,
-            upstream=False, downstream=False):
+    def clear(self, start_date=None, end_date=None, upstream=False, downstream=False):
         """
         Clears the state of task instances associated with the task, following
         the parameters specified.
@@ -2320,7 +2336,7 @@ class BaseOperator(object):
 
         count = qry.count()
 
-        clear_task_instances(qry, session)
+        clear_task_instances(qry.all(), session, dag=self.dag)
 
         session.commit()
         session.close()
@@ -3087,7 +3103,7 @@ class DAG(BaseDag, LoggingMixin):
             do_it = utils.helpers.ask_yesno(question)
 
         if do_it:
-            clear_task_instances(tis, session)
+            clear_task_instances(tis.all(), session, dag=self)
             if reset_dag_runs:
                 self.set_dag_runs_state(session=session)
         else:
