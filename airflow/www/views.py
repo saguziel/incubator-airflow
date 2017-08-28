@@ -2306,7 +2306,10 @@ class VariableView(wwwutils.DataProfilingMixin, AirflowModelView):
     def hidden_field_formatter(view, context, model, name):
         if should_hide_value_for_key(model.key):
             return Markup('*' * 8)
-        return getattr(model, name)
+        try:
+            return getattr(model, name)
+        except AirflowException:
+            return Markup('<span class="label label-danger">Invalid</span>')
 
     form_columns = (
         'key',
