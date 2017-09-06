@@ -2302,11 +2302,8 @@ class LocalTaskJob(BaseJob):
                 raise AirflowException("PID of job runner does not match")
         elif (self.task_runner.return_code() is None
               and hasattr(self.task_runner, 'process')):
-            if ti.state == State.SUCCESS:
-                logging.warning("State has been set to SUCCESS. Not terminating.")
-            else:
-                logging.warning(
-                    "State of this instance has been externally set to "
-                    "{}. Taking the poison pill. So long.".format(ti.state))
-                self.task_runner.terminate()
-                self.terminating = True
+            logging.warning(
+                "State of this instance has been externally set to "
+                "{}. Taking the poison pill. So long.".format(ti.state))
+            self.task_runner.terminate()
+            self.terminating = True
