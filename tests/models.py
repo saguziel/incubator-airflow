@@ -734,9 +734,8 @@ class TaskInstanceTest(unittest.TestCase):
         self.assertEqual(ti.try_number, 4)
 
     def test_next_retry_datetime(self):
-        delay = datetime.timedelta(seconds=3)
-        delay_squared = datetime.timedelta(seconds=9)
-        max_delay = datetime.timedelta(seconds=10)
+        delay = datetime.timedelta(seconds=30)
+        max_delay = datetime.timedelta(minutes=60)
 
         dag = models.DAG(dag_id='fail_dag')
         task = BashOperator(
@@ -750,18 +749,29 @@ class TaskInstanceTest(unittest.TestCase):
             owner='airflow',
             start_date=datetime.datetime(2016, 2, 1, 0, 0, 0))
         ti = TI(
-            task=task, execution_date=datetime.datetime.now())
+            task=task, execution_date=DEFAULT_DATE)
         ti.end_date = datetime.datetime.now()
 
         ti.try_number = 1
         dt = ti.next_retry_datetime()
-        self.assertEqual(dt, ti.end_date+delay)
+        # between 30 * 2^0.5 and 30 * 2^1 (15 and 30)
+        self.assertEqual(dt, ti.end_date + datetime.timedelta(seconds=20.0))
 
-        ti.try_number = 2
+        ti.try_number = 4
         dt = ti.next_retry_datetime()
-        self.assertEqual(dt, ti.end_date+delay_squared)
+        # between 30 * 2^2 and 30 * 2^3 (120 and 240)
+        self.assertEqual(dt, ti.end_date + datetime.timedelta(seconds=181.0))
 
-        ti.try_number = 3
+        ti.try_number = 6
+        dt = ti.next_retry_datetime()
+        # between 30 * 2^4 and 30 * 2^5 (480 and 960)
+        self.assertEqual(dt, ti.end_date + datetime.timedelta(seconds=825.0))
+
+        ti.try_number = 9
+        dt = ti.next_retry_datetime()
+        self.assertEqual(dt, ti.end_date+max_delay)
+
+        ti.try_number = 50
         dt = ti.next_retry_datetime()
         self.assertEqual(dt, ti.end_date+max_delay)
 
