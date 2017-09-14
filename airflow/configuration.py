@@ -181,6 +181,8 @@ unit_test_mode = False
 # Logging backend url for reading Airflow logs.
 logging_backend_url = 
 
+killed_task_cleanup_time = 60
+
 [cli]
 # In what way should the cli access the API. The LocalClient will use the
 # database directly, while the json_client will use the api running on the
