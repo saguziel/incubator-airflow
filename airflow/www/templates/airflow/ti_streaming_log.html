@@ -21,9 +21,6 @@
 {% block body %}
   {{ super() }}
   <h4>{{ title }}</h4>
-  <a href="{{ url_for("airflow.old_log", dag_id=dag.dag_id, task_id=task_id, execution_date=execution_date) }}">
-    Click here to view old style airflow logs
-  </a>
   <p></p>
   <ul class="nav nav-pills" role="tablist">
     {% for log in logs %}
