@@ -22,9 +22,11 @@ import unicodecsv as csv
 import itertools
 import logging
 import re
+from retrying import retry
 import subprocess
 import time
 from tempfile import NamedTemporaryFile
+from thrift.transport.TTransport import TTransportException
 import hive_metastore
 
 from airflow.exceptions import AirflowException
@@ -409,6 +411,8 @@ class HiveCliHook(BaseHook):
                 time.sleep(60)
                 self.sp.kill()
 
+def is_thrift_metastore_exception(exception):
+    return isinstance(exception, TTransportException)
 
 class HiveMetastoreHook(BaseHook):
 
@@ -495,6 +499,13 @@ class HiveMetastoreHook(BaseHook):
         else:
             return False
 
+    # TODO(Dan Davydov) This custom retry logic is an internal Airbnb Fork
+    # The long term fix is here: https://issues.apache.org/jira/browse/AIRFLOW-1620
+    @retry(retry_on_exception=is_thrift_metastore_exception,
+            wait_random_min=0,
+            wait_random_max=3 * 60 * 1000,
+            stop_max_attempt_number=7,
+            wait_exponential_multiplier=2 * 60 * 1000)
     def check_for_named_partition(self, schema, table, partition_name):
         """
         Checks whether a partition with a given name exists
