@@ -24,6 +24,7 @@ from functools import wraps
 from datetime import datetime, timedelta
 import dateutil.parser
 import copy
+import math
 import json
 import bleach
 from collections import defaultdict
@@ -101,6 +102,8 @@ DEFAULT_SENSITIVE_VARIABLE_FIELDS = (
     'apikey',
     'access_token',
 )
+
+PAGE_SIZE = conf.getint('webserver', 'page_size')
 
 if conf.getboolean('webserver', 'FILTER_BY_OWNER'):
     # filter_by_owner if authentication is enabled and filter_by_owner is true
@@ -234,9 +237,7 @@ attr_renderer = {
 
 
 def data_profiling_required(f):
-    '''
-    Decorator for views requiring data profiling access
-    '''
+    """Decorator for views requiring data profiling access"""
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if (
@@ -325,9 +326,10 @@ class Airflow(BaseView):
         session.commit()
         session.close()
 
-        payload = {}
-        payload['state'] = 'ERROR'
-        payload['error'] = ''
+        payload = {
+            "state": "ERROR",
+            "error": ""
+        }
 
         # Processing templated fields
         try:
@@ -1902,7 +1904,6 @@ class HomeView(AdminIndexView):
     def index(self):
         session = Session()
         DM = models.DagModel
-        qry = None
 
         # restrict the dags shown if filter_by_owner and current user is not superuser
         do_filter = FILTER_BY_OWNER and (not current_user.is_superuser())
@@ -1911,40 +1912,52 @@ class HomeView(AdminIndexView):
         hide_paused_dags_by_default = conf.getboolean('webserver',
                                                       'hide_paused_dags_by_default')
         show_paused_arg = request.args.get('showPaused', 'None')
+
+        def get_int_arg(value, default=0):
+            try:
+                return int(value)
+            except ValueError:
+                return default
+
+        arg_current_page = request.args.get('page', '0')
+        arg_search_query = request.args.get('search', None)
+
+        dags_per_page = PAGE_SIZE
+        current_page = get_int_arg(arg_current_page, default=0)
+
         if show_paused_arg.strip().lower() == 'false':
             hide_paused = True
-
         elif show_paused_arg.strip().lower() == 'true':
             hide_paused = False
-
         else:
             hide_paused = hide_paused_dags_by_default
 
         # read orm_dags from the db
-        qry = session.query(DM)
-        qry_fltr = []
+        sql_query = session.query(DM)
 
         if do_filter and owner_mode == 'ldapgroup':
-            qry_fltr = qry.filter(
-                ~DM.is_subdag, DM.is_active,
+            sql_query = sql_query.filter(
+                ~DM.is_subdag,
+                DM.is_active,
                 DM.owners.in_(current_user.ldap_groups)
-            ).all()
+            )
         elif do_filter and owner_mode == 'user':
-            qry_fltr = qry.filter(
+            sql_query = sql_query.filter(
                 ~DM.is_subdag, DM.is_active,
                 DM.owners == current_user.user.username
-            ).all()
+            )
         else:
-            qry_fltr = qry.filter(
+            sql_query = sql_query.filter(
                 ~DM.is_subdag, DM.is_active
-            ).all()
+            )
 
         # optionally filter out "paused" dags
         if hide_paused:
-            orm_dags = {dag.dag_id: dag for dag in qry_fltr if not dag.is_paused}
+            sql_query = sql_query.filter(~DM.is_paused)
 
-        else:
-            orm_dags = {dag.dag_id: dag for dag in qry_fltr}
+        orm_dags = {dag.dag_id: dag for dag
+                    in sql_query
+                    .all()}
 
         import_errors = session.query(models.ImportError).all()
         for ie in import_errors:
@@ -1986,13 +1999,58 @@ class HomeView(AdminIndexView):
                 for dag in unfiltered_webserver_dags
             }
 
-        all_dag_ids = sorted(set(orm_dags.keys()) | set(webserver_dags.keys()))
+        if arg_search_query:
+            lower_search_query = arg_search_query.lower()
+            # filter by dag_id
+            webserver_dags_filtered = {
+                dag_id: dag
+                for dag_id, dag in webserver_dags.items()
+                if (lower_search_query in dag_id.lower() or
+                    lower_search_query in dag.owner.lower())
+            }
+
+            all_dag_ids = (set([dag.dag_id for dag in orm_dags.values()
+                                if lower_search_query in dag.dag_id.lower() or
+                                lower_search_query in dag.owners.lower()]) |
+                           set(webserver_dags_filtered.keys()))
+
+            sorted_dag_ids = sorted(all_dag_ids)
+        else:
+            webserver_dags_filtered = webserver_dags
+            sorted_dag_ids = sorted(set(orm_dags.keys()) | set(webserver_dags.keys()))
+
+        start = current_page * dags_per_page
+        end = start + dags_per_page
+
+        num_of_all_dags = len(sorted_dag_ids)
+        page_dag_ids = sorted_dag_ids[start:end]
+        num_of_pages = int(math.ceil(num_of_all_dags / float(dags_per_page)))
+
+        auto_complete_data = set()
+        for dag in webserver_dags_filtered.values():
+            auto_complete_data.add(dag.dag_id)
+            auto_complete_data.add(dag.owner)
+        for dag in orm_dags.values():
+            auto_complete_data.add(dag.dag_id)
+            auto_complete_data.add(dag.owners)
+
         return self.render(
             'airflow/dags.html',
-            webserver_dags=webserver_dags,
+            webserver_dags=webserver_dags_filtered,
             orm_dags=orm_dags,
             hide_paused=hide_paused,
-            all_dag_ids=all_dag_ids)
+            current_page=current_page,
+            search_query=arg_search_query if arg_search_query else '',
+            page_size=dags_per_page,
+            num_of_pages=num_of_pages,
+            num_dag_from=start + 1,
+            num_dag_to=min(end, num_of_all_dags),
+            num_of_all_dags=num_of_all_dags,
+            paging=wwwutils.generate_pages(current_page, num_of_pages,
+                                           search=arg_search_query,
+                                           showPaused=not hide_paused),
+            dag_ids_in_page=page_dag_ids,
+            auto_complete_data=auto_complete_data)
 
 
 class QueryView(wwwutils.DataProfilingMixin, BaseView):
@@ -2066,7 +2124,7 @@ class AirflowModelView(ModelView):
     edit_template = 'airflow/model_edit.html'
     create_template = 'airflow/model_create.html'
     column_display_actions = True
-    page_size = 500
+    page_size = PAGE_SIZE
 
 
 class ModelViewOnly(wwwutils.LoginMixin, AirflowModelView):
@@ -2313,7 +2371,6 @@ class VariableView(wwwutils.DataProfilingMixin, AirflowModelView):
 class XComView(wwwutils.SuperUserMixin, AirflowModelView):
     verbose_name = "XCom"
     verbose_name_plural = "XComs"
-    page_size = 20
 
     form_columns = (
         'key',
@@ -2467,7 +2524,7 @@ class TaskInstanceModelView(ModelViewOnly):
         'unixname', 'priority_weight', 'queue', 'queued_dttm', 'try_number',
         'pool', 'log_url')
     can_delete = True
-    page_size = 500
+    page_size = PAGE_SIZE
 
     @action('set_running', "Set state to 'running'", None)
     def action_set_running(self, ids):
@@ -2733,7 +2790,7 @@ class DagModelView(wwwutils.SuperUserMixin, ModelView):
     )
     can_delete = False
     can_create = False
-    page_size = 50
+    page_size = PAGE_SIZE
     list_template = 'airflow/list_dags.html'
     named_filter_urls = True
 
