@@ -49,7 +49,7 @@ class BaseExecutor(LoggingMixin):
         if key not in self.queued_tasks and key not in self.running:
             self.logger.info("Adding to queue: {}".format(command))
             self.queued_tasks[key] = (command, priority, queue, task_instance)
-        elif key not in self.queued_tasks and key in self.running:
+        elif key not in self.queued_tasks and key in self.running and 'huge' not in queue and 'vpc' not in queue:
             self.logger.error("Requeueing task: {}".format(command))
             del self.running[key]
             self.queued_tasks[key] = (command, priority, queue, task_instance)
