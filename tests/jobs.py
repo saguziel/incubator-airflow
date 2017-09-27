@@ -46,7 +46,7 @@ from airflow.utils.dag_processing import SimpleDagBag, list_py_file_paths
 
 from mock import Mock, patch
 from sqlalchemy.orm.session import make_transient
-from tests.executors.test_executor import TestExecutor
+from tests.executor.test_executor import TestExecutor
 
 from tests.core import TEST_DAG_FOLDER
 
@@ -74,6 +74,8 @@ UNPARSEABLE_DAG_FILE_CONTENTS = 'airflow DAG'
 # Filename to be used for dags that are created in an ad-hoc manner and can be removed/
 # created at runtime
 TEMP_DAG_FILENAME = "temp_dag.py"
+TEST_DAGS_FOLDER = os.path.join(
+    os.path.dirname(os.path.realpath(__file__)), 'dags')
 
 
 class BackfillJobTest(unittest.TestCase):
@@ -175,6 +177,54 @@ class BackfillJobTest(unittest.TestCase):
                 ignore_first_depends_on_past=True)
             job.run()
 
+    def test_backfill_ordered_concurrent_execute(self):
+        dag = DAG(
+            dag_id='test_backfill_ordered_concurrent_execute',
+            start_date=DEFAULT_DATE,
+            schedule_interval="@daily")
+
+        with dag:
+            op1 = DummyOperator(task_id='leave1')
+            op2 = DummyOperator(task_id='leave2')
+            op3 = DummyOperator(task_id='upstream_level_1')
+            op4 = DummyOperator(task_id='upstream_level_2')
+            op5 = DummyOperator(task_id='upstream_level_3')
+            # order randomly
+            op2.set_downstream(op3)
+            op1.set_downstream(op3)
+            op4.set_downstream(op5)
+            op3.set_downstream(op4)
+
+        dag.clear()
+
+        executor = TestExecutor(do_update=True)
+        job = BackfillJob(dag=dag,
+                          executor=executor,
+                          start_date=DEFAULT_DATE,
+                          end_date=DEFAULT_DATE + datetime.timedelta(days=2),
+                          )
+        job.run()
+
+        # test executor history keeps a list
+        history = executor.history
+
+        # check if right order. Every loop has a 'pause' (0) to change state
+        # from RUNNING to SUCCESS.
+        # 6,0,3,0,3,0,3,0 = 8 loops
+        self.assertEqual(8, len(history))
+
+        loop_count = 0
+
+        while len(history) > 0:
+            queued_tasks = history.pop(0)
+            if loop_count == 0:
+                # first loop should contain 6 tasks (3 days x 2 tasks)
+                self.assertEqual(6, len(queued_tasks))
+            if loop_count == 2 or loop_count == 4 or loop_count == 6:
+                # 3 days x 1 task
+                self.assertEqual(3, len(queued_tasks))
+            loop_count += 1
+
     def test_backfill_pooled_tasks(self):
         """
         Test that queued tasks are executed by BackfillJob
@@ -185,7 +235,6 @@ class BackfillJobTest(unittest.TestCase):
         pool = Pool(pool='test_backfill_pooled_task_pool', slots=1)
         session.add(pool)
         session.commit()
-
         dag = self.dagbag.get_dag('test_backfill_pooled_task_dag')
         dag.clear()
 
@@ -259,6 +308,183 @@ class BackfillJobTest(unittest.TestCase):
         self.assertEqual(ti.state, State.SUCCESS)
         dag.clear()
 
+    def test_cli_receives_delay_arg(self):
+        """
+        Tests that the --delay argument is passed correctly to the BackfillJob
+        """
+        dag_id = 'example_bash_operator'
+        run_date = DEFAULT_DATE
+        args = [
+            'backfill',
+            dag_id,
+            '-s',
+            run_date.isoformat(),
+            '--delay_on_limit',
+            '0.5',
+        ]
+        parsed_args = self.parser.parse_args(args)
+        self.assertEqual(0.5, parsed_args.delay_on_limit)
+
+    def _get_dag_test_max_active_limits(self, dag_id, max_active_runs=1):
+        dag = DAG(
+            dag_id=dag_id,
+            start_date=DEFAULT_DATE,
+            schedule_interval="@hourly",
+            max_active_runs=max_active_runs
+        )
+
+        with dag:
+            op1 = DummyOperator(task_id='leave1')
+            op2 = DummyOperator(task_id='leave2')
+            op3 = DummyOperator(task_id='upstream_level_1')
+            op4 = DummyOperator(task_id='upstream_level_2')
+
+            op1 >> op2 >> op3
+            op4 >> op3
+
+        dag.clear()
+        return dag
+
+    def test_backfill_max_limit_check_within_limit(self):
+        dag = self._get_dag_test_max_active_limits(
+            'test_backfill_max_limit_check_within_limit',
+            max_active_runs=16)
+
+        start_date = DEFAULT_DATE - datetime.timedelta(hours=1)
+        end_date = DEFAULT_DATE
+
+        executor = TestExecutor(do_update=True)
+        job = BackfillJob(dag=dag,
+                          start_date=start_date,
+                          end_date=end_date,
+                          executor=executor,
+                          donot_pickle=True)
+        job.run()
+
+        dagruns = DagRun.find(dag_id=dag.dag_id)
+        self.assertEqual(2, len(dagruns))
+        self.assertTrue(all([run.state == State.SUCCESS for run in dagruns]))
+
+    def test_backfill_max_limit_check(self):
+        dag_id = 'test_backfill_max_limit_check'
+        run_id = 'test_dagrun'
+        start_date = DEFAULT_DATE - datetime.timedelta(hours=1)
+        end_date = DEFAULT_DATE
+
+        dag_run_created_cond = threading.Condition()
+
+        def run_backfill(cond):
+            cond.acquire()
+            try:
+                dag = self._get_dag_test_max_active_limits(dag_id)
+
+                # this session object is different than the one in the main thread
+                thread_session = settings.Session()
+
+                # Existing dagrun that is not within the backfill range
+                dag.create_dagrun(
+                    run_id=run_id,
+                    state=State.RUNNING,
+                    execution_date=DEFAULT_DATE + datetime.timedelta(hours=1),
+                    start_date=DEFAULT_DATE,
+                )
+
+                thread_session.commit()
+                cond.notify()
+            finally:
+                cond.release()
+
+            executor = TestExecutor(do_update=True)
+            job = BackfillJob(dag=dag,
+                              start_date=start_date,
+                              end_date=end_date,
+                              executor=executor,
+                              donot_pickle=True)
+            job.run()
+
+            thread_session.close()
+
+        backfill_job_thread = threading.Thread(target=run_backfill,
+                                               name="run_backfill",
+                                               args=(dag_run_created_cond,))
+
+        dag_run_created_cond.acquire()
+        session = settings.Session()
+        backfill_job_thread.start()
+        try:
+            # at this point backfill can't run since the max_active_runs has been
+            # reached, so it is waiting
+            dag_run_created_cond.wait(timeout=1.5)
+            dagruns = DagRun.find(dag_id=dag_id)
+            dr = dagruns[0]
+            self.assertEqual(1, len(dagruns))
+            self.assertEqual(dr.run_id, run_id)
+
+            # allow the backfill to execute by setting the existing dag run to SUCCESS,
+            # backfill will execute dag runs 1 by 1
+            dr.set_state(State.SUCCESS)
+            session.merge(dr)
+            session.commit()
+            session.close()
+
+            backfill_job_thread.join()
+
+            dagruns = DagRun.find(dag_id=dag_id)
+            self.assertEqual(3, len(dagruns))  # 2 from backfill + 1 existing
+            self.assertEqual(dagruns[-1].run_id, dr.run_id)
+        finally:
+            dag_run_created_cond.release()
+
+    def test_backfill_max_limit_check_no_count_existing(self):
+        dag = self._get_dag_test_max_active_limits(
+            'test_backfill_max_limit_check_no_count_existing')
+        start_date = DEFAULT_DATE
+        end_date = DEFAULT_DATE
+
+        # Existing dagrun that is within the backfill range
+        dag.create_dagrun(run_id="test_existing_backfill",
+                          state=State.RUNNING,
+                          execution_date=DEFAULT_DATE,
+                          start_date=DEFAULT_DATE)
+
+        executor = TestExecutor(do_update=True)
+        job = BackfillJob(dag=dag,
+                          start_date=start_date,
+                          end_date=end_date,
+                          executor=executor,
+                          donot_pickle=True)
+        job.run()
+
+        # BackfillJob will run since the existing DagRun does not count for the max
+        # active limit since it's within the backfill date range.
+        dagruns = DagRun.find(dag_id=dag.dag_id)
+        # will only be able to run 1 (the existing one) since there's just
+        # one dag run slot left given the max_active_runs limit
+        self.assertEqual(1, len(dagruns))
+        self.assertEqual(State.SUCCESS, dagruns[0].state)
+
+    def test_backfill_max_limit_check_complete_loop(self):
+        dag = self._get_dag_test_max_active_limits(
+            'test_backfill_max_limit_check_complete_loop')
+        start_date = DEFAULT_DATE - datetime.timedelta(hours=1)
+        end_date = DEFAULT_DATE
+
+        # Given the max limit to be 1 in active dag runs, we need to run the
+        # backfill job 3 times
+        success_expected = 2
+        executor = TestExecutor(do_update=True)
+        job = BackfillJob(dag=dag,
+                          start_date=start_date,
+                          end_date=end_date,
+                          executor=executor,
+                          donot_pickle=True)
+        job.run()
+
+        success_dagruns = len(DagRun.find(dag_id=dag.dag_id, state=State.SUCCESS))
+        running_dagruns = len(DagRun.find(dag_id=dag.dag_id, state=State.RUNNING))
+        self.assertEqual(success_expected, success_dagruns)
+        self.assertEqual(0, running_dagruns)  # no dag_runs in running state are left
+
     def test_sub_set_subdag(self):
         dag = DAG(
             'test_sub_set_subdag',
@@ -279,7 +505,7 @@ class BackfillJobTest(unittest.TestCase):
 
         dag.clear()
         dr = dag.create_dagrun(run_id="test",
-                               state=State.SUCCESS,
+                               state=State.RUNNING,
                                execution_date=DEFAULT_DATE,
                                start_date=DEFAULT_DATE)
 
@@ -772,7 +998,7 @@ class SchedulerJobTest(unittest.TestCase):
         res_keys = map(lambda x: x.key, res)
         self.assertIn(ti_no_dagrun.key, res_keys)
         self.assertIn(ti_with_dagrun.key, res_keys)
-        
+
     def test_find_executable_task_instances_pool(self):
         dag_id = 'SchedulerJobTest.test_find_executable_task_instances_pool'
         task_id_1 = 'dummy'
@@ -2316,7 +2542,7 @@ class SchedulerJobTest(unittest.TestCase):
         for file_path in list_py_file_paths(TEST_DAGS_FOLDER):
             detected_files.append(file_path)
         self.assertEqual(sorted(detected_files), sorted(expected_files))
-        
+
     def test_reset_orphaned_tasks_nothing(self):
         """Try with nothing. """
         scheduler = SchedulerJob(**self.default_scheduler_args)
