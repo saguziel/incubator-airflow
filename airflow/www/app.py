@@ -23,6 +23,7 @@ from flask_wtf.csrf import CsrfProtect
 csrf = CsrfProtect()
 
 import airflow
+from airflow import configuration as conf
 from airflow import models
 from airflow.settings import Session
 
@@ -70,8 +71,10 @@ def create_app(config=None, testing=False):
         av(vs.Airflow(name='DAGs', category='DAGs'))
 
         av(vs.QueryView(name='Ad Hoc Query', category="Data Profiling"))
-        av(vs.ChartModelView(
-            models.Chart, Session, name="Charts", category="Data Profiling"))
+
+        if not conf.getboolean('core', 'secure_mode'):
+            av(vs.ChartModelView(
+                models.Chart, Session, name="Charts", category="Data Profiling"))
         av(vs.KnowEventView(
             models.KnownEvent,
             Session, name="Known Events", category="Data Profiling"))
