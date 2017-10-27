@@ -174,6 +174,9 @@ default_impersonation =
 # What security module to use (for example kerberos):
 security =
 
+# What security module to use (for example kerberos):
+secure_mode = True
+
 # Turn unit test mode on (overwrites many configuration options with test
 # values at runtime)
 unit_test_mode = False
